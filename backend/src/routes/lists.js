@@ -17,8 +17,13 @@ router.post('/', async (req, res) => {
 });
 
 router.delete('/:id', async (req, res) => {
-  await pool.query('DELETE FROM lists WHERE id = $1', [req.params.id]);
-  res.status(204).end();
+  try {
+    await pool.query('DELETE FROM movies WHERE list_id = $1', [req.params.id]);
+    await pool.query('DELETE FROM lists WHERE id = $1', [req.params.id]);
+    res.status(204).end();
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;

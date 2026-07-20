@@ -108,7 +108,11 @@ async function runSync() {
     const radarr = radarrClient(settings);
     const { rows: lists } = await pool.query('SELECT * FROM lists');
     for (const list of lists) {
-      await syncList(list, radarr, settings);
+      try {
+        await syncList(list, radarr, settings);
+      } catch (e) {
+        console.error(`syncList failed for list "${list.name}":`, e.message);
+      }
     }
     await updateStatuses(radarr);
     lastSyncedAt = new Date();
