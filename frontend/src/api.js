@@ -11,7 +11,8 @@ export const addList     = (url, name) => fetch(`${BASE}/lists`, {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ url, name }),
 }).then(json);
-export const deleteList  = (id) => fetch(`${BASE}/lists/${id}`, { method: 'DELETE' });
+export const deleteList  = (id) => fetch(`${BASE}/lists/${id}`, { method: 'DELETE' })
+  .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); });
 
 export const getMovies   = (params = {}) => {
   const qs = new URLSearchParams(
