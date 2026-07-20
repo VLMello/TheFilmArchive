@@ -1,0 +1,75 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, sans-serif;
+  background: #111;
+  color: #eee;
+  min-height: 100vh;
+}
+
+a { color: #e2b040; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button {
+  cursor: pointer;
+  padding: 6px 14px;
+  background: #e2b040;
+  color: #111;
+  border: none;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+button:disabled { opacity: 0.5; cursor: default; }
+
+input, select {
+  background: #1e1e1e;
+  color: #eee;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 6px 10px;
+  width: 100%;
+}
+
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #222; }
+th { color: #888; font-size: 0.8rem; text-transform: uppercase; }
+tr:hover td { background: #1a1a1a; }
+
+.chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.chip-pending    { background: #333; color: #999; }
+.chip-queued     { background: #1a3a5c; color: #6ab0f5; }
+.chip-downloading { background: #1a3a1a; color: #6af56a; }
+.chip-downloaded { background: #2a1a4a; color: #c06af5; }
+.chip-error      { background: #3a1a1a; color: #f56a6a; }
+
+nav {
+  display: flex;
+  gap: 24px;
+  padding: 16px 24px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #222;
+  align-items: center;
+}
+
+nav .logo { font-weight: 700; font-size: 1.1rem; color: #e2b040; margin-right: auto; }
+
+.page { padding: 24px; max-width: 1100px; margin: 0 auto; }
+.page h1 { font-size: 1.4rem; margin-bottom: 20px; }
+
+.card {
+  background: #1a1a1a;
+  border: 1px solid #222;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.row { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+.error-text { color: #f56a6a; font-size: 0.85rem; }
