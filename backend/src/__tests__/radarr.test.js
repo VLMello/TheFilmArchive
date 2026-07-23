@@ -79,3 +79,13 @@ test('remove deletes the movie and its files', async () => {
     params: { deleteFiles: true, addImportExclusion: false },
   });
 });
+
+test('getHistory returns the movie history records', async () => {
+  mockAxiosInstance.get.mockResolvedValue({
+    data: [{ eventType: 'grabbed', data: { torrentInfoHash: 'ABC123' } }],
+  });
+  const radarr = client(settings);
+  const history = await radarr.getHistory(42);
+  expect(mockAxiosInstance.get).toHaveBeenCalledWith('/history/movie', { params: { movieId: 42 } });
+  expect(history[0].data.torrentInfoHash).toBe('ABC123');
+});

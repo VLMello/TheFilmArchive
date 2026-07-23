@@ -42,6 +42,11 @@ function client(settings) {
         params: { deleteFiles: true, addImportExclusion: false },
       });
     },
+
+    async getHistory(radarrId) {
+      const { data } = await http.get('/history/movie', { params: { movieId: radarrId } });
+      return data ?? [];
+    },
   };
 }
 

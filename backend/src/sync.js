@@ -3,6 +3,7 @@ const { pool } = require('./db');
 const { fetchList } = require('./letterboxd');
 const { client: radarrClient } = require('./radarr');
 const { client: plexClient } = require('./plex');
+const { client: qbittorrentClient } = require('./qbittorrent');
 
 let running = false;
 let lastSyncedAt = null;
@@ -12,7 +13,7 @@ async function getSettings() {
   return Object.fromEntries(rows.map(r => [r.key, r.value]));
 }
 
-async function syncList(list, radarr, settings, plex) {
+async function syncList(list, radarr, settings, plex, qbittorrent) {
   const movies = await fetchList(list.url);
 
   for (const movie of movies) {
@@ -85,17 +86,18 @@ async function syncList(list, radarr, settings, plex) {
     }
   }
 
-  await reconcileRemovals(list, movies, radarr, plex);
+  await reconcileRemovals(list, movies, radarr, plex, qbittorrent);
 
   await pool.query('UPDATE lists SET last_synced_at = NOW() WHERE id = $1', [list.id]);
 }
 
 // Movies that were added because of a list entry, but whose entry has since
 // been removed from the Letterboxd list, get deleted: from Radarr (which also
-// deletes the movie's file), a filesystem safety-net pass in case Radarr left
-// anything behind (e.g. Plex-generated sidecar files it doesn't track), from
+// deletes the organized /movies copy), qBittorrent (which stops seeding and
+// deletes the raw file in /downloads — Radarr's own deleteFiles never touches
+// that), a filesystem safety-net pass in case anything's still left behind,
 // TFA's own DB, and a Plex library nudge so the dead entry doesn't linger.
-async function reconcileRemovals(list, movies, radarr, plex) {
+async function reconcileRemovals(list, movies, radarr, plex, qbittorrent) {
   const currentSlugs = new Set(movies.map(m => m.slug));
   const { rows } = await pool.query(
     'SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id = $1',
@@ -119,6 +121,15 @@ async function reconcileRemovals(list, movies, radarr, plex) {
         }
       }
 
+      let torrentHash = null;
+      try {
+        const history = await radarr.getHistory(row.radarr_id);
+        const grabbed = history.find(h => h.eventType === 'grabbed' && h.data?.torrentInfoHash);
+        torrentHash = grabbed?.data?.torrentInfoHash ?? null;
+      } catch (e) {
+        console.error(`Could not look up download hash for "${row.title}":`, e.message);
+      }
+
       try {
         await radarr.remove(row.radarr_id);
       } catch (e) {
@@ -133,6 +144,14 @@ async function reconcileRemovals(list, movies, radarr, plex) {
           await fs.rm(folderPath, { recursive: true, force: true });
         } catch (e) {
           console.error(`Filesystem cleanup failed for "${row.title}" at ${folderPath}:`, e.message);
+        }
+      }
+
+      if (torrentHash && qbittorrent) {
+        try {
+          await qbittorrent.removeByHash(torrentHash);
+        } catch (e) {
+          console.error(`Failed to remove torrent for "${row.title}" from qBittorrent:`, e.message);
         }
       }
     }
@@ -165,9 +184,13 @@ async function updateStatuses(radarr) {
     try {
       const data = await radarr.get(movie.radarr_id);
       const queueItem = queueByMovieId.get(movie.radarr_id);
+      // A queue item just means Radarr grabbed a release — it may still be
+      // sitting in the torrent client's own queue (e.g. hit the max
+      // concurrent downloads limit), not actually transferring yet.
+      const actuallyDownloading = queueItem?.status === 'downloading';
       const status = data.hasFile
         ? 'downloaded'
-        : queueItem
+        : actuallyDownloading
           ? 'downloading'
           : 'queued';
 
@@ -176,9 +199,11 @@ async function updateStatuses(radarr) {
       if (data.hasFile) {
         progress = 100;
         sizeBytes = data.sizeOnDisk || null;
-      } else if (queueItem && queueItem.size) {
+      } else if (actuallyDownloading && queueItem.size) {
         progress = Math.round(((queueItem.size - queueItem.sizeleft) / queueItem.size) * 1000) / 10;
         sizeBytes = queueItem.size;
+      } else if (queueItem?.size) {
+        sizeBytes = queueItem.size; // known size even if not actively downloading yet
       }
 
       const overview = data.overview ?? null;
@@ -200,10 +225,11 @@ async function runSync() {
     const settings = await getSettings();
     const radarr = radarrClient(settings);
     const plex = plexClient(settings);
+    const qbittorrent = qbittorrentClient(settings);
     const { rows: lists } = await pool.query('SELECT * FROM lists');
     for (const list of lists) {
       try {
-        await syncList(list, radarr, settings, plex);
+        await syncList(list, radarr, settings, plex, qbittorrent);
       } catch (e) {
         console.error(`syncList failed for list "${list.name}":`, e.message);
       }

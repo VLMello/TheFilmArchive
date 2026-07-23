@@ -21,6 +21,14 @@ const SETTING_GROUPS = [
     ],
   },
   {
+    title: 'qBittorrent',
+    fields: [
+      { key: 'qbittorrent_url',      label: 'qBittorrent URL',      placeholder: 'http://localhost:8090' },
+      { key: 'qbittorrent_username', label: 'qBittorrent Username', placeholder: 'admin' },
+      { key: 'qbittorrent_password', label: 'qBittorrent Password', placeholder: 'your-password' },
+    ],
+  },
+  {
     title: 'Plex',
     fields: [
       { key: 'plex_movies_path', label: 'Plex Movies Path', placeholder: 'D:\\Media\\Movies' },
