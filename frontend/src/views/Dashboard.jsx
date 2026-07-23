@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { getLists, getSyncStatus, triggerSync, getMovies } from '../api';
+import ErrorBanner from '../components/ErrorBanner';
+import LoadingState from '../components/LoadingState';
 
 const STATUSES = ['pending', 'queued', 'downloading', 'downloaded'];
 
@@ -8,36 +10,68 @@ export default function Dashboard() {
   const [status, setStatus] = useState({ running: false, lastSyncedAt: null });
   const [counts, setCounts] = useState({});
   const [syncing, setSyncing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
-    const [l, s, movies] = await Promise.all([
-      getLists(),
-      getSyncStatus(),
-      getMovies(),
-    ]);
-    setLists(l);
-    setStatus(s);
-    const c = {};
-    for (const m of movies) c[m.status] = (c[m.status] ?? 0) + 1;
-    setCounts(c);
+    try {
+      const [l, s, movies] = await Promise.all([
+        getLists(),
+        getSyncStatus(),
+        getMovies(),
+      ]);
+      setLists(l);
+      setStatus(s);
+      const c = {};
+      for (const m of movies) c[m.status] = (c[m.status] ?? 0) + 1;
+      setCounts(c);
+      setError(null);
+    } catch (e) {
+      setError('Failed to load dashboard data.');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
   async function handleSync() {
     setSyncing(true);
-    await triggerSync();
+    try {
+      await triggerSync();
+    } catch (e) {
+      setSyncing(false);
+      setError('Failed to start sync.');
+      return;
+    }
     // Poll status until not running
     const poll = setInterval(async () => {
-      const s = await getSyncStatus();
-      setStatus(s);
-      if (!s.running) { clearInterval(poll); setSyncing(false); load(); }
+      try {
+        const s = await getSyncStatus();
+        setStatus(s);
+        if (!s.running) { clearInterval(poll); setSyncing(false); load(); }
+      } catch (e) {
+        clearInterval(poll);
+        setSyncing(false);
+        setError('Failed to check sync status.');
+      }
     }, 2000);
+  }
+
+  if (loading) {
+    return (
+      <div className="page">
+        <h1>Dashboard</h1>
+        <LoadingState label="Loading dashboard…" />
+      </div>
+    );
   }
 
   return (
     <div className="page">
       <h1>Dashboard</h1>
+
+      {error && <ErrorBanner message={error} onRetry={load} />}
 
       <div className="card">
         <div className="row">
