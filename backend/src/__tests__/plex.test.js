@@ -6,7 +6,7 @@ const { client } = require('../plex');
 let mockAxiosInstance;
 
 beforeEach(() => {
-  mockAxiosInstance = { get: jest.fn() };
+  mockAxiosInstance = { get: jest.fn(), put: jest.fn() };
   axios.create.mockReturnValue(mockAxiosInstance);
   jest.useFakeTimers();
 });
@@ -37,11 +37,11 @@ test('getMovieSectionKey finds the movie-type library section', async () => {
   });
 });
 
-test('refreshAndClean refreshes the section then empties trash', async () => {
+test('refreshAndClean refreshes the section then empties trash via PUT', async () => {
   mockAxiosInstance.get
     .mockResolvedValueOnce({ data: { MediaContainer: { Directory: [{ type: 'movie', key: '1' }] } } })
-    .mockResolvedValueOnce({}) // refresh
-    .mockResolvedValueOnce({}); // emptyTrash
+    .mockResolvedValueOnce({}); // refresh
+  mockAxiosInstance.put.mockResolvedValueOnce({}); // emptyTrash
 
   const plex = client({ plex_url: 'http://plex:32400', plex_token: 'tok' });
   const promise = plex.refreshAndClean();
@@ -51,7 +51,8 @@ test('refreshAndClean refreshes the section then empties trash', async () => {
   expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(2, '/library/sections/1/refresh', {
     params: { 'X-Plex-Token': 'tok' },
   });
-  expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(3, '/library/sections/1/emptyTrash', {
+  // Newer Plex Media Server rejects a GET here with a 404 — must be PUT.
+  expect(mockAxiosInstance.put).toHaveBeenCalledWith('/library/sections/1/emptyTrash', null, {
     params: { 'X-Plex-Token': 'tok' },
   });
 });

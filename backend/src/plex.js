@@ -24,7 +24,8 @@ function client(settings) {
       if (!key) return;
       await http.get(`/library/sections/${key}/refresh`, { params: { 'X-Plex-Token': token } });
       await new Promise(resolve => setTimeout(resolve, 3000));
-      await http.get(`/library/sections/${key}/emptyTrash`, { params: { 'X-Plex-Token': token } });
+      // Newer Plex Media Server versions reject a GET here with a 404 — needs PUT.
+      await http.put(`/library/sections/${key}/emptyTrash`, null, { params: { 'X-Plex-Token': token } });
     },
   };
 }
