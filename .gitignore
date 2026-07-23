@@ -7,4 +7,5 @@ prowlarr/
 qbittorrent/
 plex/
 postgres-data/
+backups/
 .superpowers/
