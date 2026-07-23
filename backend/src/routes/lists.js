@@ -1,12 +1,13 @@
 const router = require('express').Router();
 const { pool } = require('../db');
+const asyncHandler = require('../asyncHandler');
 
-router.get('/', async (req, res) => {
+router.get('/', asyncHandler(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM lists ORDER BY id');
   res.json(rows);
-});
+}));
 
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const { url, name } = req.body;
   if (!url || !name) return res.status(400).json({ error: 'url and name are required' });
   const { rows } = await pool.query(
@@ -14,16 +15,12 @@ router.post('/', async (req, res) => {
     [url, name]
   );
   res.status(201).json(rows[0]);
-});
+}));
 
-router.delete('/:id', async (req, res) => {
-  try {
-    await pool.query('DELETE FROM movies WHERE list_id = $1', [req.params.id]);
-    await pool.query('DELETE FROM lists WHERE id = $1', [req.params.id]);
-    res.status(204).end();
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+router.delete('/:id', asyncHandler(async (req, res) => {
+  await pool.query('DELETE FROM movies WHERE list_id = $1', [req.params.id]);
+  await pool.query('DELETE FROM lists WHERE id = $1', [req.params.id]);
+  res.status(204).end();
+}));
 
 module.exports = router;

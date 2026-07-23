@@ -1,7 +1,8 @@
 const router = require('express').Router();
 const { pool } = require('../db');
+const asyncHandler = require('../asyncHandler');
 
-router.get('/', async (req, res) => {
+router.get('/', asyncHandler(async (req, res) => {
   const { status, list_id } = req.query;
   const params = [];
   let query = `
@@ -15,6 +16,6 @@ router.get('/', async (req, res) => {
   query += ' ORDER BY m.created_at DESC';
   const { rows } = await pool.query(query, params);
   res.json(rows);
-});
+}));
 
 module.exports = router;

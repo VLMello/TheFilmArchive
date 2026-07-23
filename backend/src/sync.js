@@ -15,10 +15,11 @@ async function syncList(list, radarr, settings) {
 
   for (const movie of movies) {
     const { rows } = await pool.query(
-      'SELECT id FROM movies WHERE letterboxd_slug = $1 AND list_id = $2',
+      'SELECT id, radarr_error FROM movies WHERE letterboxd_slug = $1 AND list_id = $2',
       [movie.slug, list.id]
     );
-    if (rows.length > 0) continue;
+    // Rows that previously failed (radarr_error set) get retried instead of skipped.
+    if (rows.length > 0 && !rows[0].radarr_error) continue;
 
     let radarrMovie = null;
     try {
@@ -26,7 +27,8 @@ async function syncList(list, radarr, settings) {
     } catch (e) {
       await pool.query(
         `INSERT INTO movies (letterboxd_slug, title, year, radarr_error, status, list_id)
-         VALUES ($1, $2, $3, $4, 'pending', $5) ON CONFLICT DO NOTHING`,
+         VALUES ($1, $2, $3, $4, 'pending', $5)
+         ON CONFLICT (letterboxd_slug, list_id) DO UPDATE SET radarr_error = $4, status = 'pending'`,
         [movie.slug, movie.title, movie.year, e.message, list.id]
       );
       continue;
@@ -35,7 +37,8 @@ async function syncList(list, radarr, settings) {
     if (!radarrMovie) {
       await pool.query(
         `INSERT INTO movies (letterboxd_slug, title, year, radarr_error, status, list_id)
-         VALUES ($1, $2, $3, $4, 'pending', $5) ON CONFLICT DO NOTHING`,
+         VALUES ($1, $2, $3, $4, 'pending', $5)
+         ON CONFLICT (letterboxd_slug, list_id) DO UPDATE SET radarr_error = $4, status = 'pending'`,
         [movie.slug, movie.title, movie.year, 'No match found in Radarr', list.id]
       );
       continue;
@@ -49,7 +52,9 @@ async function syncList(list, radarr, settings) {
       );
       await pool.query(
         `INSERT INTO movies (letterboxd_slug, title, year, tmdb_id, radarr_id, status, list_id)
-         VALUES ($1, $2, $3, $4, $5, 'queued', $6) ON CONFLICT DO NOTHING`,
+         VALUES ($1, $2, $3, $4, $5, 'queued', $6)
+         ON CONFLICT (letterboxd_slug, list_id) DO UPDATE
+           SET tmdb_id = $4, radarr_id = $5, status = 'queued', radarr_error = NULL`,
         [movie.slug, movie.title, movie.year, radarrMovie.tmdbId, added.id, list.id]
       );
     } catch (e) {
@@ -60,7 +65,9 @@ async function syncList(list, radarr, settings) {
           if (existing?.id) {
             await pool.query(
               `INSERT INTO movies (letterboxd_slug, title, year, tmdb_id, radarr_id, status, list_id)
-               VALUES ($1, $2, $3, $4, $5, 'queued', $6) ON CONFLICT DO NOTHING`,
+               VALUES ($1, $2, $3, $4, $5, 'queued', $6)
+               ON CONFLICT (letterboxd_slug, list_id) DO UPDATE
+                 SET tmdb_id = $4, radarr_id = $5, status = 'queued', radarr_error = NULL`,
               [movie.slug, movie.title, movie.year, existing.tmdbId, existing.id, list.id]
             );
           }
@@ -68,7 +75,8 @@ async function syncList(list, radarr, settings) {
       } else {
         await pool.query(
           `INSERT INTO movies (letterboxd_slug, title, year, radarr_error, status, list_id)
-           VALUES ($1, $2, $3, $4, 'pending', $5) ON CONFLICT DO NOTHING`,
+           VALUES ($1, $2, $3, $4, 'pending', $5)
+           ON CONFLICT (letterboxd_slug, list_id) DO UPDATE SET radarr_error = $4, status = 'pending'`,
           [movie.slug, movie.title, movie.year, e.message, list.id]
         );
       }
@@ -85,17 +93,33 @@ async function updateStatuses(radarr) {
   if (rows.length === 0) return;
 
   const queue = await radarr.getQueue();
-  const queuedRadarrIds = new Set(queue.map(q => q.movieId));
+  const queueByMovieId = new Map(queue.map(q => [q.movieId, q]));
 
   for (const movie of rows) {
     try {
       const data = await radarr.get(movie.radarr_id);
+      const queueItem = queueByMovieId.get(movie.radarr_id);
       const status = data.hasFile
         ? 'downloaded'
-        : queuedRadarrIds.has(movie.radarr_id)
+        : queueItem
           ? 'downloading'
           : 'queued';
-      await pool.query('UPDATE movies SET status = $1 WHERE id = $2', [status, movie.id]);
+
+      let progress = null;
+      if (data.hasFile) {
+        progress = 100;
+      } else if (queueItem && queueItem.size) {
+        progress = Math.round(((queueItem.size - queueItem.sizeleft) / queueItem.size) * 1000) / 10;
+      }
+
+      const overview = data.overview ?? null;
+      const genres = (data.genres ?? []).join(', ') || null;
+      const poster = (data.images ?? []).find(i => i.coverType === 'poster')?.remoteUrl ?? null;
+
+      await pool.query(
+        `UPDATE movies SET status = $1, progress = $2, overview = $3, genres = $4, poster_url = $5 WHERE id = $6`,
+        [status, progress, overview, genres, poster, movie.id]
+      );
     } catch (_) {}
   }
 }
@@ -121,8 +145,19 @@ async function runSync() {
   }
 }
 
+async function refreshStatuses() {
+  if (running) return;
+  try {
+    const settings = await getSettings();
+    const radarr = radarrClient(settings);
+    await updateStatuses(radarr);
+  } catch (e) {
+    console.error('refreshStatuses failed:', e.message);
+  }
+}
+
 function getStatus() {
   return { running, lastSyncedAt };
 }
 
-module.exports = { runSync, getStatus };
+module.exports = { runSync, refreshStatuses, getStatus };
