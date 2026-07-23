@@ -36,6 +36,12 @@ function client(settings) {
       const { data } = await http.get('/queue', { params: { pageSize: 1000 } });
       return data.records ?? [];
     },
+
+    async remove(radarrId) {
+      await http.delete(`/movie/${radarrId}`, {
+        params: { deleteFiles: true, addImportExclusion: false },
+      });
+    },
   };
 }
 

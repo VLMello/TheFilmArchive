@@ -3,7 +3,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import App from '../App';
 
-// Dashboard/Movies mount as part of routing and immediately fire their own
+// Movies/Settings mount as part of routing and immediately fire their own
 // data-fetch effects; flush those microtasks so they don't leak into the
 // next test as an unwrapped act() warning.
 async function flush() {
@@ -21,21 +21,25 @@ vi.mock('../api', () => ({
   deleteList: vi.fn(),
 }));
 
-function renderApp() {
+function renderApp(initialEntries = ['/movies']) {
   return render(
-    <MemoryRouter initialEntries={['/']}>
+    <MemoryRouter initialEntries={initialEntries}>
       <App />
     </MemoryRouter>
   );
 }
 
-test('renders all nav links and the logo', async () => {
+test('renders the nav links and the logo', async () => {
   renderApp();
   expect(screen.getByText('The Film Archive')).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Movies' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
   await flush();
+});
+
+test('redirects / to /movies', async () => {
+  renderApp(['/']);
+  expect(await screen.findByText('Last sync: Never')).toBeInTheDocument();
 });
 
 test('hamburger button toggles the nav-links open class', async () => {
@@ -54,12 +58,12 @@ test('hamburger button toggles the nav-links open class', async () => {
 test('clicking a nav link closes the mobile menu', async () => {
   renderApp();
   const toggle = screen.getByRole('button', { name: /toggle navigation menu/i });
-  const moviesLink = screen.getByRole('link', { name: 'Movies' });
-  const links = moviesLink.closest('.nav-links');
+  const settingsLink = screen.getByRole('link', { name: 'Settings' });
+  const links = settingsLink.closest('.nav-links');
 
   fireEvent.click(toggle);
   expect(links).toHaveClass('open');
-  fireEvent.click(moviesLink);
+  fireEvent.click(settingsLink);
   expect(links).not.toHaveClass('open');
   await flush();
 });

@@ -1,6 +1,8 @@
+const fs = require('fs/promises');
 const { pool } = require('./db');
 const { fetchList } = require('./letterboxd');
 const { client: radarrClient } = require('./radarr');
+const { client: plexClient } = require('./plex');
 
 let running = false;
 let lastSyncedAt = null;
@@ -10,7 +12,7 @@ async function getSettings() {
   return Object.fromEntries(rows.map(r => [r.key, r.value]));
 }
 
-async function syncList(list, radarr, settings) {
+async function syncList(list, radarr, settings, plex) {
   const movies = await fetchList(list.url);
 
   for (const movie of movies) {
@@ -83,12 +85,76 @@ async function syncList(list, radarr, settings) {
     }
   }
 
+  await reconcileRemovals(list, movies, radarr, plex);
+
   await pool.query('UPDATE lists SET last_synced_at = NOW() WHERE id = $1', [list.id]);
+}
+
+// Movies that were added because of a list entry, but whose entry has since
+// been removed from the Letterboxd list, get deleted: from Radarr (which also
+// deletes the movie's file), a filesystem safety-net pass in case Radarr left
+// anything behind (e.g. Plex-generated sidecar files it doesn't track), from
+// TFA's own DB, and a Plex library nudge so the dead entry doesn't linger.
+async function reconcileRemovals(list, movies, radarr, plex) {
+  const currentSlugs = new Set(movies.map(m => m.slug));
+  const { rows } = await pool.query(
+    'SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id = $1',
+    [list.id]
+  );
+  const stale = rows.filter(r => !currentSlugs.has(r.letterboxd_slug));
+  if (stale.length === 0) return;
+
+  let removedAny = false;
+
+  for (const row of stale) {
+    if (row.radarr_id) {
+      let folderPath = null;
+      try {
+        const movie = await radarr.get(row.radarr_id);
+        folderPath = movie?.path ?? null;
+      } catch (e) {
+        if (e.response?.status !== 404) {
+          console.error(`Skipping removal of "${row.title}" — could not reach Radarr:`, e.message);
+          continue;
+        }
+      }
+
+      try {
+        await radarr.remove(row.radarr_id);
+      } catch (e) {
+        if (e.response?.status !== 404) {
+          console.error(`Failed to delete "${row.title}" from Radarr:`, e.message);
+          continue;
+        }
+      }
+
+      if (folderPath) {
+        try {
+          await fs.rm(folderPath, { recursive: true, force: true });
+        } catch (e) {
+          console.error(`Filesystem cleanup failed for "${row.title}" at ${folderPath}:`, e.message);
+        }
+      }
+    }
+
+    await pool.query('DELETE FROM movies WHERE id = $1', [row.id]);
+    console.log(`Removed "${row.title}" — no longer on list "${list.name}"`);
+    removedAny = true;
+  }
+
+  if (removedAny && plex) {
+    try {
+      await plex.refreshAndClean();
+    } catch (e) {
+      console.error('Plex refresh failed:', e.message);
+    }
+  }
 }
 
 async function updateStatuses(radarr) {
   const { rows } = await pool.query(
-    `SELECT id, radarr_id FROM movies WHERE radarr_id IS NOT NULL AND status != 'downloaded'`
+    `SELECT id, radarr_id FROM movies
+     WHERE radarr_id IS NOT NULL AND (status != 'downloaded' OR size_bytes IS NULL)`
   );
   if (rows.length === 0) return;
 
@@ -106,10 +172,13 @@ async function updateStatuses(radarr) {
           : 'queued';
 
       let progress = null;
+      let sizeBytes = null;
       if (data.hasFile) {
         progress = 100;
+        sizeBytes = data.sizeOnDisk || null;
       } else if (queueItem && queueItem.size) {
         progress = Math.round(((queueItem.size - queueItem.sizeleft) / queueItem.size) * 1000) / 10;
+        sizeBytes = queueItem.size;
       }
 
       const overview = data.overview ?? null;
@@ -117,8 +186,8 @@ async function updateStatuses(radarr) {
       const poster = (data.images ?? []).find(i => i.coverType === 'poster')?.remoteUrl ?? null;
 
       await pool.query(
-        `UPDATE movies SET status = $1, progress = $2, overview = $3, genres = $4, poster_url = $5 WHERE id = $6`,
-        [status, progress, overview, genres, poster, movie.id]
+        `UPDATE movies SET status = $1, progress = $2, overview = $3, genres = $4, poster_url = $5, size_bytes = $6 WHERE id = $7`,
+        [status, progress, overview, genres, poster, sizeBytes, movie.id]
       );
     } catch (_) {}
   }
@@ -130,10 +199,11 @@ async function runSync() {
   try {
     const settings = await getSettings();
     const radarr = radarrClient(settings);
+    const plex = plexClient(settings);
     const { rows: lists } = await pool.query('SELECT * FROM lists');
     for (const list of lists) {
       try {
-        await syncList(list, radarr, settings);
+        await syncList(list, radarr, settings, plex);
       } catch (e) {
         console.error(`syncList failed for list "${list.name}":`, e.message);
       }

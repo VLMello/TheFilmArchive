@@ -24,6 +24,8 @@ const SETTING_GROUPS = [
     title: 'Plex',
     fields: [
       { key: 'plex_movies_path', label: 'Plex Movies Path', placeholder: 'D:\\Media\\Movies' },
+      { key: 'plex_url',         label: 'Plex URL',         placeholder: 'http://localhost:32400' },
+      { key: 'plex_token',       label: 'Plex Token',       placeholder: 'your-plex-token' },
     ],
   },
 ];

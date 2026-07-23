@@ -11,7 +11,7 @@ const settings = {
 let mockAxiosInstance;
 
 beforeEach(() => {
-  mockAxiosInstance = { get: jest.fn(), post: jest.fn() };
+  mockAxiosInstance = { get: jest.fn(), post: jest.fn(), delete: jest.fn() };
   axios.create.mockReturnValue(mockAxiosInstance);
 });
 
@@ -69,4 +69,13 @@ test('getQueue returns records array', async () => {
   const queue = await radarr.getQueue();
   expect(queue).toHaveLength(2);
   expect(queue[0].movieId).toBe(42);
+});
+
+test('remove deletes the movie and its files', async () => {
+  mockAxiosInstance.delete.mockResolvedValue({});
+  const radarr = client(settings);
+  await radarr.remove(42);
+  expect(mockAxiosInstance.delete).toHaveBeenCalledWith('/movie/42', {
+    params: { deleteFiles: true, addImportExclusion: false },
+  });
 });

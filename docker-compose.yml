@@ -20,6 +20,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       FLARESOLVERR_URL: http://flaresolverr:8191/v1
+    volumes:
+      - ${MOVIES_PATH}:/movies
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,6 +85,8 @@ services:
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
     restart: unless-stopped
+    mem_limit: 3g
+    memswap_limit: 3g
     environment:
       PUID: 1000
       PGID: 1000
