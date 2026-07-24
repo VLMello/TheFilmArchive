@@ -121,6 +121,22 @@ test('hides the Radarr button when the movie was never added to Radarr', async (
   expect(screen.getByText('View on Letterboxd')).toBeInTheDocument();
 });
 
+test('has a Plex button when the movie has a plex_url', async () => {
+  getMovie.mockResolvedValue({ ...MOVIE, status: 'downloaded', plex_url: 'http://192.168.0.154:32400/web/index.html#!/server/abc123/details?key=%2Flibrary%2Fmetadata%2F141' });
+  renderAt(5);
+
+  const plexLink = (await screen.findByText('Open in Plex')).closest('a');
+  expect(plexLink).toHaveAttribute('href', 'http://192.168.0.154:32400/web/index.html#!/server/abc123/details?key=%2Flibrary%2Fmetadata%2F141');
+});
+
+test('hides the Plex button when the movie has no plex_url yet', async () => {
+  getMovie.mockResolvedValue({ ...MOVIE, plex_url: null });
+  renderAt(5);
+
+  await screen.findByText('The Godfather');
+  expect(screen.queryByText('Open in Plex')).not.toBeInTheDocument();
+});
+
 test('shows an error banner with retry when the movie fails to load', async () => {
   getMovie.mockRejectedValueOnce(new Error('down'));
   renderAt(5);

@@ -1,6 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { pool } = require('./db');
+const { getSettings } = require('./settings');
 const { fetchList } = require('./letterboxd');
 const { client: radarrClient } = require('./radarr');
 const { client: plexClient } = require('./plex');
@@ -15,11 +16,6 @@ const NOTABLE_CREW_JOBS = [
   'Screenplay', 'Writer', 'Story', 'Producer', 'Executive Producer',
   'Director of Photography', 'Original Music Composer', 'Editor', 'Production Design',
 ];
-
-async function getSettings() {
-  const { rows } = await pool.query('SELECT key, value FROM settings');
-  return Object.fromEntries(rows.map(r => [r.key, r.value]));
-}
 
 async function syncList(list, radarr, settings, plex, qbittorrent) {
   const movies = await fetchList(list.url);

@@ -25,6 +25,29 @@ function client(settings) {
       await http.get(`/library/sections/${key}/refresh`, { params: { 'X-Plex-Token': token } });
     },
 
+    // Looks up the Plex ratingKey for a movie by TMDB id, so a deep link can
+    // be built — Plex's own guid doesn't expose the TMDB id unless
+    // includeGuids is requested.
+    async findRatingKeyByTmdbId(tmdbId) {
+      const key = await this.getMovieSectionKey();
+      if (!key) return null;
+      const { data } = await http.get(`/library/sections/${key}/all`, {
+        params: { 'X-Plex-Token': token, includeGuids: 1 },
+        headers: { Accept: 'application/json' },
+      });
+      const items = data.MediaContainer.Metadata || [];
+      const match = items.find(it => (it.Guid || []).some(g => g.id === `tmdb://${tmdbId}`));
+      return match ? match.ratingKey : null;
+    },
+
+    async getMachineIdentifier() {
+      const { data } = await http.get('/identity', {
+        params: { 'X-Plex-Token': token },
+        headers: { Accept: 'application/json' },
+      });
+      return data.MediaContainer.machineIdentifier;
+    },
+
     // Best-effort: nudges Plex to notice a file removed from disk and drop the
     // now-dead library entry, instead of leaving a broken/grayed-out item
     // until Plex's own next scheduled scan.

@@ -32,9 +32,10 @@ const SETTING_GROUPS = [
   {
     title: 'Plex',
     fields: [
-      { key: 'plex_movies_path', label: 'Plex Movies Path', placeholder: 'D:\\Media\\Movies' },
-      { key: 'plex_url',         label: 'Plex URL',         placeholder: 'http://localhost:32400' },
-      { key: 'plex_token',       label: 'Plex Token',       placeholder: 'your-plex-token' },
+      { key: 'plex_movies_path', label: 'Plex Movies Path',            placeholder: 'D:\\Media\\Movies' },
+      { key: 'plex_url',         label: 'Plex URL (internal, for API calls)', placeholder: 'http://localhost:32400' },
+      { key: 'plex_external_url', label: 'Plex URL (browser-accessible)', placeholder: 'http://192.168.0.154:32400' },
+      { key: 'plex_token',       label: 'Plex Token',                  placeholder: 'your-plex-token' },
     ],
   },
 ];

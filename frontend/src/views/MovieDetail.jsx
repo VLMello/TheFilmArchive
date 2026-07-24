@@ -145,6 +145,11 @@ export default function MovieDetail() {
                 <button>Open in Radarr</button>
               </a>
             )}
+            {movie.plex_url && (
+              <a href={movie.plex_url} target="_blank" rel="noreferrer">
+                <button>Open in Plex</button>
+              </a>
+            )}
           </div>
 
           <div className="movie-added">Added {new Date(movie.created_at).toLocaleDateString()}</div>
