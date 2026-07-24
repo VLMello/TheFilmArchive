@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { getMovies, getLists, getSettings, getSyncStatus, triggerSync } from '../api';
+import { useNavigate } from 'react-router-dom';
+import { getMovies, getLists, getSyncStatus, triggerSync } from '../api';
 import ErrorBanner from '../components/ErrorBanner';
 import LoadingState from '../components/LoadingState';
 import { formatBytes } from '../format';
@@ -15,9 +16,9 @@ const SORTERS = {
 };
 
 export default function Movies() {
+  const navigate = useNavigate();
   const [movies, setMovies]     = useState([]);
   const [lists, setLists]       = useState([]);
-  const [radarrUrl, setRadarrUrl] = useState('');
   const [status, setStatus]     = useState('');
   const [listId, setListId]     = useState('');
   const [search, setSearch]     = useState('');
@@ -32,10 +33,6 @@ export default function Movies() {
 
   useEffect(() => {
     getLists().then(setLists).catch(() => {});
-    // radarr_url is the internal Docker hostname used for backend API calls
-    // (e.g. http://radarr:7878) — a browser can't resolve that, so the
-    // click-through link needs the separate browser-accessible URL.
-    getSettings().then(s => setRadarrUrl(s.radarr_external_url ?? '')).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -198,14 +195,8 @@ export default function Movies() {
             <div
               key={m.id}
               className="movie-card"
-              style={{ cursor: m.tmdb_id && radarrUrl ? 'pointer' : 'default' }}
-              onClick={() => {
-                if (m.tmdb_id && radarrUrl) {
-                  // Radarr's web UI routes by titleSlug (== tmdbId), not its
-                  // internal database id.
-                  window.open(`${radarrUrl}/movie/${m.tmdb_id}`, '_blank');
-                }
-              }}
+              style={{ cursor: 'pointer' }}
+              onClick={() => navigate(`/movies/${m.id}`)}
             >
               <div className="movie-poster">
                 {m.poster_url
@@ -218,6 +209,8 @@ export default function Movies() {
                   <span className="movie-title">{m.title}</span>
                   <span className="movie-year">{m.year ?? '—'}</span>
                 </div>
+
+                {m.director && <div className="movie-stat-row">{m.director}</div>}
 
                 {totalBytes != null && m.status !== 'downloading' && (
                   <div className="movie-stat-row">{formatBytes(totalBytes)}</div>

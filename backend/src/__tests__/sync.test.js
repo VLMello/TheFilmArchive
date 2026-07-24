@@ -20,6 +20,7 @@ const mockRadarr = {
   getQueue: jest.fn(),
   remove: jest.fn(),
   getHistory: jest.fn(),
+  getCredits: jest.fn(),
 };
 
 const mockPlex = {
@@ -44,6 +45,7 @@ beforeEach(() => {
   qbittorrentClientFactory.mockReturnValue(mockQbittorrent);
   fs.rm.mockResolvedValue();
   mockRadarr.getHistory.mockResolvedValue([]);
+  mockRadarr.getCredits.mockResolvedValue([]);
 });
 
 test('getStatus returns not running initially', () => {
@@ -256,4 +258,71 @@ test('a queue item that is actually transferring is reported as downloading with
   const [status, progress] = updateCall[1];
   expect(status).toBe('downloading');
   expect(progress).toBe(25);
+});
+
+test('fetches director/runtime/certification/studio/ratings/cast/crew when unknown', async () => {
+  pool.query
+    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
+    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, director: null, credits: null }] })
+    .mockResolvedValueOnce({ rows: [] });
+
+  mockRadarr.get.mockResolvedValue({
+    hasFile: false,
+    overview: 'A movie.',
+    genres: ['Drama'],
+    images: [],
+    runtime: 175,
+    certification: 'R',
+    studio: 'Paramount',
+    ratings: { imdb: { value: 9.2 } },
+  });
+  mockRadarr.getQueue.mockResolvedValue([]);
+  mockRadarr.getCredits.mockResolvedValue([
+    { type: 'crew', job: 'Director', personName: 'Francis Ford Coppola' },
+    { type: 'cast', order: 1, character: 'Michael Corleone', personName: 'Al Pacino' },
+    { type: 'cast', order: 0, character: 'Vito Corleone', personName: 'Marlon Brando' },
+    { type: 'crew', job: 'Screenplay', personName: 'Mario Puzo' },
+    { type: 'crew', job: 'Boom Operator', personName: 'Someone Obscure' }, // filtered out
+  ]);
+
+  await refreshStatuses();
+
+  expect(mockRadarr.getCredits).toHaveBeenCalledWith(42);
+  const updateCall = pool.query.mock.calls.find(c =>
+    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
+  );
+  const [, , , , , , director, runtime, certification, studio, ratings, credits] = updateCall[1];
+  expect(director).toBe('Francis Ford Coppola');
+  expect(runtime).toBe(175);
+  expect(certification).toBe('R');
+  expect(studio).toBe('Paramount');
+  expect(JSON.parse(ratings)).toEqual({ imdb: { value: 9.2 } });
+
+  const parsedCredits = JSON.parse(credits);
+  // cast sorted by order, Director excluded from crew, obscure job filtered out
+  expect(parsedCredits.cast).toEqual([
+    { name: 'Marlon Brando', character: 'Vito Corleone' },
+    { name: 'Al Pacino', character: 'Michael Corleone' },
+  ]);
+  expect(parsedCredits.crew).toEqual([{ name: 'Mario Puzo', job: 'Screenplay' }]);
+});
+
+test('does not look up credits again once director and credits are already known', async () => {
+  const existingCredits = { cast: [{ name: 'Marlon Brando', character: 'Vito Corleone' }], crew: [] };
+  pool.query
+    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
+    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, director: 'Francis Ford Coppola', credits: existingCredits }] })
+    .mockResolvedValueOnce({ rows: [] });
+
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
+  mockRadarr.getQueue.mockResolvedValue([]);
+
+  await refreshStatuses();
+
+  expect(mockRadarr.getCredits).not.toHaveBeenCalled();
+  const updateCall = pool.query.mock.calls.find(c =>
+    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
+  );
+  expect(updateCall[1][6]).toBe('Francis Ford Coppola'); // director unchanged
+  expect(JSON.parse(updateCall[1][11])).toEqual(existingCredits); // credits unchanged
 });

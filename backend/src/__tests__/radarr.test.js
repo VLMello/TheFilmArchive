@@ -89,3 +89,13 @@ test('getHistory returns the movie history records', async () => {
   expect(mockAxiosInstance.get).toHaveBeenCalledWith('/history/movie', { params: { movieId: 42 } });
   expect(history[0].data.torrentInfoHash).toBe('ABC123');
 });
+
+test('getCredits returns the movie cast/crew records', async () => {
+  mockAxiosInstance.get.mockResolvedValue({
+    data: [{ type: 'crew', job: 'Director', personName: 'Francis Ford Coppola' }],
+  });
+  const radarr = client(settings);
+  const credits = await radarr.getCredits(42);
+  expect(mockAxiosInstance.get).toHaveBeenCalledWith('/credit', { params: { movieId: 42 } });
+  expect(credits[0].personName).toBe('Francis Ford Coppola');
+});

@@ -59,6 +59,19 @@ test('POST /api/sync fires sync and returns 200', async () => {
   expect(res.body.message).toBe('sync started');
 });
 
+test('GET /api/movies/:id returns a single movie', async () => {
+  pool.query.mockResolvedValue({ rows: [{ id: 5, title: 'The Godfather', list_name: 'Queue' }] });
+  const res = await request(app).get('/api/movies/5');
+  expect(res.status).toBe(200);
+  expect(res.body.title).toBe('The Godfather');
+});
+
+test('GET /api/movies/:id returns 404 when not found', async () => {
+  pool.query.mockResolvedValue({ rows: [] });
+  const res = await request(app).get('/api/movies/999');
+  expect(res.status).toBe(404);
+});
+
 test('GET /api/settings returns settings object', async () => {
   pool.query.mockResolvedValue({ rows: [{ key: 'radarr_url', value: 'http://radarr:7878' }] });
   const res = await request(app).get('/api/settings');

@@ -47,6 +47,11 @@ function client(settings) {
       const { data } = await http.get('/history/movie', { params: { movieId: radarrId } });
       return data ?? [];
     },
+
+    async getCredits(radarrId) {
+      const { data } = await http.get('/credit', { params: { movieId: radarrId } });
+      return data ?? [];
+    },
   };
 }
 

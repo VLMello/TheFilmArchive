@@ -18,4 +18,16 @@ router.get('/', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+router.get('/:id', asyncHandler(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT m.*, l.name AS list_name, l.url AS list_url
+     FROM movies m
+     JOIN lists l ON m.list_id = l.id
+     WHERE m.id = $1`,
+    [req.params.id]
+  );
+  if (rows.length === 0) return res.status(404).json({ error: 'Movie not found' });
+  res.json(rows[0]);
+}));
+
 module.exports = router;

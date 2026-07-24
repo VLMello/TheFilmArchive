@@ -1,0 +1,6 @@
+ALTER TABLE movies
+  ADD COLUMN IF NOT EXISTS director      TEXT,
+  ADD COLUMN IF NOT EXISTS runtime       INT,
+  ADD COLUMN IF NOT EXISTS certification TEXT,
+  ADD COLUMN IF NOT EXISTS studio        TEXT,
+  ADD COLUMN IF NOT EXISTS ratings       JSONB;

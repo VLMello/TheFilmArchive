@@ -8,6 +8,13 @@ const { client: qbittorrentClient } = require('./qbittorrent');
 let running = false;
 let lastSyncedAt = null;
 
+// Crew jobs worth surfacing on the detail page — deliberately excludes the
+// long tail Radarr/TMDB tracks (stand-ins, boom operators, etc).
+const NOTABLE_CREW_JOBS = [
+  'Screenplay', 'Writer', 'Story', 'Producer', 'Executive Producer',
+  'Director of Photography', 'Original Music Composer', 'Editor', 'Production Design',
+];
+
 async function getSettings() {
   const { rows } = await pool.query('SELECT key, value FROM settings');
   return Object.fromEntries(rows.map(r => [r.key, r.value]));
@@ -172,8 +179,8 @@ async function reconcileRemovals(list, movies, radarr, plex, qbittorrent) {
 
 async function updateStatuses(radarr) {
   const { rows } = await pool.query(
-    `SELECT id, radarr_id FROM movies
-     WHERE radarr_id IS NOT NULL AND (status != 'downloaded' OR size_bytes IS NULL)`
+    `SELECT id, radarr_id, director, credits FROM movies
+     WHERE radarr_id IS NOT NULL AND (status != 'downloaded' OR size_bytes IS NULL OR director IS NULL OR credits IS NULL)`
   );
   if (rows.length === 0) return;
 
@@ -209,10 +216,38 @@ async function updateStatuses(radarr) {
       const overview = data.overview ?? null;
       const genres = (data.genres ?? []).join(', ') || null;
       const poster = (data.images ?? []).find(i => i.coverType === 'poster')?.remoteUrl ?? null;
+      const runtime = data.runtime ?? null;
+      const certification = data.certification ?? null;
+      const studio = data.studio ?? null;
+      const ratings = data.ratings ? JSON.stringify(data.ratings) : null;
+
+      // Cast/crew never change once known — only fetched once per movie,
+      // not on every sync cycle.
+      let director = movie.director ?? null;
+      let credits = movie.credits ?? null;
+      if (!director || !credits) {
+        try {
+          const creditList = await radarr.getCredits(movie.radarr_id);
+          director = creditList.find(c => c.type === 'crew' && c.job === 'Director')?.personName ?? director;
+          const cast = creditList
+            .filter(c => c.type === 'cast')
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+            .slice(0, 10)
+            .map(c => ({ name: c.personName, character: c.character }));
+          const crew = creditList
+            .filter(c => c.type === 'crew' && c.job !== 'Director' && NOTABLE_CREW_JOBS.includes(c.job))
+            .map(c => ({ name: c.personName, job: c.job }));
+          credits = { cast, crew };
+        } catch (_) {}
+      }
+      const creditsJson = credits ? JSON.stringify(credits) : null;
 
       await pool.query(
-        `UPDATE movies SET status = $1, progress = $2, overview = $3, genres = $4, poster_url = $5, size_bytes = $6 WHERE id = $7`,
-        [status, progress, overview, genres, poster, sizeBytes, movie.id]
+        `UPDATE movies SET status = $1, progress = $2, overview = $3, genres = $4, poster_url = $5,
+           size_bytes = $6, director = $7, runtime = $8, certification = $9, studio = $10, ratings = $11,
+           credits = $12
+         WHERE id = $13`,
+        [status, progress, overview, genres, poster, sizeBytes, director, runtime, certification, studio, ratings, creditsJson, movie.id]
       );
     } catch (_) {}
   }

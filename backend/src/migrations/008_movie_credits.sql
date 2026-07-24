@@ -1,0 +1,2 @@
+ALTER TABLE movies
+  ADD COLUMN IF NOT EXISTS credits JSONB;

@@ -6,3 +6,10 @@ export function formatBytes(bytes) {
   const value = bytes / Math.pow(1024, exp);
   return `${value.toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
 }
+
+export function formatRuntime(minutes) {
+  if (minutes == null || Number.isNaN(minutes) || minutes <= 0) return null;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}

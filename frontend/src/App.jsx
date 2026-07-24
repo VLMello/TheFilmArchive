@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Routes, Route, Navigate, NavLink } from 'react-router-dom';
 import Movies from './views/Movies';
+import MovieDetail from './views/MovieDetail';
 import Settings from './views/Settings';
 
 export default function App() {
@@ -26,6 +27,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/movies" replace />} />
         <Route path="/movies" element={<Movies />} />
+        <Route path="/movies/:id" element={<MovieDetail />} />
         <Route path="/settings" element={<Settings />} />
       </Routes>
     </>

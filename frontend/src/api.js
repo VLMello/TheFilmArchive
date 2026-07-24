@@ -20,6 +20,7 @@ export const getMovies   = (params = {}) => {
   ).toString();
   return fetch(`${BASE}/movies${qs ? `?${qs}` : ''}`).then(json);
 };
+export const getMovie     = (id) => fetch(`${BASE}/movies/${id}`).then(json);
 
 export const triggerSync  = () => fetch(`${BASE}/sync`, { method: 'POST' }).then(json);
 export const getSyncStatus = () => fetch(`${BASE}/sync/status`).then(json);
