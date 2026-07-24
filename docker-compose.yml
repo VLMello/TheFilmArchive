@@ -53,8 +53,29 @@ services:
     restart: unless-stopped
     ports:
       - "8080:80"
+      - "80:80"
     depends_on:
       - tfa-backend
+
+  # LAN-only DNS resolver so http://thefilmarchive.com works from any device
+  # on the network. Runs with network_mode: host (not the compose bridge
+  # network) so it's unaffected by the bridge breakage this host has hit
+  # after unclean reboots, and so it can actually be reachable at port 53
+  # from other LAN devices. Its thefilmarchive.com record is rewritten by
+  # scripts/dns-sync.sh whenever the host's DHCP-leased IP changes; every
+  # other query is forwarded to LAN_GATEWAY so this container being down
+  # only breaks this one hostname, not general internet DNS for the LAN.
+  dnsmasq:
+    build: ./dnsmasq
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./dnsmasq/records:/etc/dnsmasq.d
+    command:
+      - --server=${LAN_DNS_UPSTREAM_1}
+      - --server=${LAN_DNS_UPSTREAM_2}
+      - --interface=${LAN_INTERFACE}
+      - --bind-interfaces
 
   radarr:
     image: lscr.io/linuxserver/radarr:latest

@@ -6,6 +6,7 @@ radarr/
 prowlarr/
 qbittorrent/
 plex/
+dnsmasq/records/
 postgres-data/
 backups/
 .superpowers/
