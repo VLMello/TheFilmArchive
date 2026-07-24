@@ -24,6 +24,7 @@ const mockRadarr = {
 };
 
 const mockPlex = {
+  refresh: jest.fn(),
   refreshAndClean: jest.fn(),
 };
 
@@ -305,6 +306,51 @@ test('a queue item still queued to import (not yet copying) is also reported as 
     typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
   );
   expect(updateCall[1][0]).toBe('importing');
+});
+
+test('nudges Plex once a movie finishes importing and becomes downloaded', async () => {
+  pool.query
+    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
+    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, status: 'importing' }] })
+    .mockResolvedValueOnce({ rows: [] }); // UPDATE movies
+
+  mockRadarr.get.mockResolvedValue({ hasFile: true, sizeOnDisk: 100_000_000, overview: null, genres: [], images: [] });
+  mockRadarr.getQueue.mockResolvedValue([]);
+
+  await refreshStatuses();
+
+  expect(mockPlex.refresh).toHaveBeenCalledTimes(1);
+});
+
+test('does not nudge Plex when nothing finished importing this cycle', async () => {
+  pool.query
+    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
+    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, status: 'downloading' }] })
+    .mockResolvedValueOnce({ rows: [] });
+
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
+  mockRadarr.getQueue.mockResolvedValue([
+    { movieId: 42, status: 'downloading', size: 10_000_000_000, sizeleft: 7_500_000_000 },
+  ]);
+
+  await refreshStatuses();
+
+  expect(mockPlex.refresh).not.toHaveBeenCalled();
+});
+
+test('does not nudge Plex again for a movie that was already downloaded', async () => {
+  pool.query
+    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
+    // still selected because size_bytes is null, but status is already 'downloaded'
+    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, status: 'downloaded' }] })
+    .mockResolvedValueOnce({ rows: [] });
+
+  mockRadarr.get.mockResolvedValue({ hasFile: true, sizeOnDisk: 100_000_000, overview: null, genres: [], images: [] });
+  mockRadarr.getQueue.mockResolvedValue([]);
+
+  await refreshStatuses();
+
+  expect(mockPlex.refresh).not.toHaveBeenCalled();
 });
 
 test('fetches director/runtime/certification/studio/ratings/cast/crew when unknown', async () => {

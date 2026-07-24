@@ -16,6 +16,15 @@ function client(settings) {
       return section ? section.key : null;
     },
 
+    // Best-effort: nudges Plex to pick up a newly imported file immediately,
+    // instead of leaving it invisible on clients with no manual "scan
+    // library" button until Plex's own next scheduled scan.
+    async refresh() {
+      const key = await this.getMovieSectionKey();
+      if (!key) return;
+      await http.get(`/library/sections/${key}/refresh`, { params: { 'X-Plex-Token': token } });
+    },
+
     // Best-effort: nudges Plex to notice a file removed from disk and drop the
     // now-dead library entry, instead of leaving a broken/grayed-out item
     // until Plex's own next scheduled scan.

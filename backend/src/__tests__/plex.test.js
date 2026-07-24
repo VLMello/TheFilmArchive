@@ -57,6 +57,20 @@ test('refreshAndClean refreshes the section then empties trash via PUT', async (
   });
 });
 
+test('refresh scans the section without touching trash', async () => {
+  mockAxiosInstance.get
+    .mockResolvedValueOnce({ data: { MediaContainer: { Directory: [{ type: 'movie', key: '1' }] } } })
+    .mockResolvedValueOnce({}); // refresh
+
+  const plex = client({ plex_url: 'http://plex:32400', plex_token: 'tok' });
+  await plex.refresh();
+
+  expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(2, '/library/sections/1/refresh', {
+    params: { 'X-Plex-Token': 'tok' },
+  });
+  expect(mockAxiosInstance.put).not.toHaveBeenCalled();
+});
+
 test('refreshAndClean does nothing if no movie section is found', async () => {
   mockAxiosInstance.get.mockResolvedValue({ data: { MediaContainer: { Directory: [] } } });
   const plex = client({ plex_url: 'http://plex:32400', plex_token: 'tok' });

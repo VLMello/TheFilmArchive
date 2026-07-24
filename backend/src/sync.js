@@ -197,15 +197,16 @@ async function getFolderSize(folderPath) {
   }
 }
 
-async function updateStatuses(radarr) {
+async function updateStatuses(radarr, plex) {
   const { rows } = await pool.query(
-    `SELECT id, radarr_id, director, credits FROM movies
+    `SELECT id, radarr_id, director, credits, status FROM movies
      WHERE radarr_id IS NOT NULL AND (status != 'downloaded' OR size_bytes IS NULL OR director IS NULL OR credits IS NULL)`
   );
   if (rows.length === 0) return;
 
   const queue = await radarr.getQueue();
   const queueByMovieId = new Map(queue.map(q => [q.movieId, q]));
+  let justFinishedImporting = false;
 
   for (const movie of rows) {
     try {
@@ -226,6 +227,8 @@ async function updateStatuses(radarr) {
           : importingNow
             ? 'importing'
             : 'queued';
+
+      if (status === 'downloaded' && movie.status !== 'downloaded') justFinishedImporting = true;
 
       let progress = null;
       let sizeBytes = null;
@@ -283,6 +286,14 @@ async function updateStatuses(radarr) {
       );
     } catch (_) {}
   }
+
+  if (justFinishedImporting && plex) {
+    try {
+      await plex.refresh();
+    } catch (e) {
+      console.error('Plex refresh failed:', e.message);
+    }
+  }
 }
 
 async function runSync() {
@@ -301,7 +312,7 @@ async function runSync() {
         console.error(`syncList failed for list "${list.name}":`, e.message);
       }
     }
-    await updateStatuses(radarr);
+    await updateStatuses(radarr, plex);
     lastSyncedAt = new Date();
   } finally {
     running = false;
@@ -313,7 +324,8 @@ async function refreshStatuses() {
   try {
     const settings = await getSettings();
     const radarr = radarrClient(settings);
-    await updateStatuses(radarr);
+    const plex = plexClient(settings);
+    await updateStatuses(radarr, plex);
   } catch (e) {
     console.error('refreshStatuses failed:', e.message);
   }
