@@ -78,7 +78,7 @@ export default function MovieDetail() {
             <span style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>{movie.list_name}</span>
           </div>
 
-          {movie.status === 'downloading' && movie.progress != null && (
+          {(movie.status === 'downloading' || movie.status === 'importing') && movie.progress != null && (
             <div className="progress-bar" style={{ maxWidth: 320 }}>
               <div className="progress-fill" style={{ width: `${movie.progress}%` }} />
               <span className="progress-label">
@@ -88,7 +88,7 @@ export default function MovieDetail() {
               </span>
             </div>
           )}
-          {movie.status !== 'downloading' && totalBytes != null && (
+          {movie.status !== 'downloading' && movie.status !== 'importing' && totalBytes != null && (
             <div className="movie-stat-row">{formatBytes(totalBytes)}</div>
           )}
 

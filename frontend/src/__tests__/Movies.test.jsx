@@ -21,6 +21,7 @@ const MOVIES = [
   { id: 2, title: 'Brazil', year: 1985, status: 'pending', radarr_error: 'No match found in Radarr', list_id: 1, list_name: 'A', created_at: '2026-01-03T00:00:00Z', size_bytes: null, progress: null },
   { id: 3, title: 'Citizen Kane', year: 1941, status: 'queued', radarr_error: null, list_id: 2, list_name: 'B', created_at: '2026-01-02T00:00:00Z', size_bytes: null, progress: null },
   { id: 4, title: 'Dune', year: 2021, status: 'downloading', radarr_error: null, list_id: 1, list_name: 'A', created_at: '2026-01-04T00:00:00Z', size_bytes: 20_000_000_000, progress: 25 },
+  { id: 5, title: 'Arrival', year: 2016, status: 'importing', radarr_error: null, list_id: 1, list_name: 'A', created_at: '2026-01-05T00:00:00Z', size_bytes: 8_000_000_000, progress: 40 },
 ];
 
 beforeEach(() => {
@@ -130,6 +131,15 @@ test('shows file size for a downloaded movie and progress-with-size for a downlo
 
   expect(await screen.findByText('9.3 GB')).toBeInTheDocument(); // Alien, downloaded, 10_000_000_000 bytes
   expect(await screen.findByText('4.7 GB / 18.6 GB (25%)')).toBeInTheDocument(); // Dune, downloading
+});
+
+test('shows progress-with-size and an "importing" chip for a movie being copied into place', async () => {
+  getMovies.mockResolvedValue(MOVIES);
+  render(<Movies />);
+
+  expect(await screen.findByText('3.0 GB / 7.5 GB (40%)')).toBeInTheDocument(); // Arrival, importing
+  const card = (await screen.findByText('Arrival')).closest('.movie-card');
+  expect(card.querySelector('.chip-importing')).toHaveTextContent('importing');
 });
 
 test('Sync Now polls status until running is false, then stops', async () => {

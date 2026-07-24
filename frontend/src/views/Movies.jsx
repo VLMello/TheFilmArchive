@@ -5,8 +5,8 @@ import ErrorBanner from '../components/ErrorBanner';
 import LoadingState from '../components/LoadingState';
 import { formatBytes } from '../format';
 
-const STATUS_OPTIONS = ['', 'pending', 'queued', 'downloading', 'downloaded'];
-const STATUSES = ['pending', 'queued', 'downloading', 'downloaded'];
+const STATUS_OPTIONS = ['', 'pending', 'queued', 'downloading', 'importing', 'downloaded'];
+const STATUSES = ['pending', 'queued', 'downloading', 'importing', 'downloaded'];
 
 const SORTERS = {
   newest: (a, b) => new Date(b.created_at) - new Date(a.created_at),
@@ -212,7 +212,7 @@ export default function Movies() {
 
                 {m.director && <div className="movie-stat-row">{m.director}</div>}
 
-                {totalBytes != null && m.status !== 'downloading' && (
+                {totalBytes != null && m.status !== 'downloading' && m.status !== 'importing' && (
                   <div className="movie-stat-row">{formatBytes(totalBytes)}</div>
                 )}
 
@@ -223,7 +223,7 @@ export default function Movies() {
                   <span style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>{m.list_name}</span>
                 </div>
 
-                {m.status === 'downloading' && m.progress != null && (
+                {(m.status === 'downloading' || m.status === 'importing') && m.progress != null && (
                   <div className="progress-bar">
                     <div className="progress-fill" style={{ width: `${m.progress}%` }} />
                     <span className="progress-label">
@@ -241,8 +241,6 @@ export default function Movies() {
                     ))}
                   </div>
                 )}
-
-                {m.overview && <p className="movie-overview">{m.overview}</p>}
 
                 {m.radarr_error && (
                   <p className="error-text" style={{ marginTop: 6 }}>⚠ {m.radarr_error}</p>

@@ -3,7 +3,7 @@ jest.mock('../letterboxd', () => ({ fetchList: jest.fn() }));
 jest.mock('../radarr', () => ({ client: jest.fn() }));
 jest.mock('../plex', () => ({ client: jest.fn() }));
 jest.mock('../qbittorrent', () => ({ client: jest.fn() }));
-jest.mock('fs/promises', () => ({ rm: jest.fn() }));
+jest.mock('fs/promises', () => ({ rm: jest.fn(), readdir: jest.fn(), stat: jest.fn() }));
 
 const { pool } = require('../db');
 const { fetchList } = require('../letterboxd');
@@ -258,6 +258,53 @@ test('a queue item that is actually transferring is reported as downloading with
   const [status, progress] = updateCall[1];
   expect(status).toBe('downloading');
   expect(progress).toBe(25);
+});
+
+test('a finished torrent still being copied into /movies is reported as importing with real progress', async () => {
+  pool.query
+    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
+    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42 }] })
+    .mockResolvedValueOnce({ rows: [] });
+
+  mockRadarr.get.mockResolvedValue({
+    hasFile: false, overview: null, genres: [], images: [], path: '/movies/Some Movie (2020)',
+  });
+  mockRadarr.getQueue.mockResolvedValue([
+    { movieId: 42, status: 'completed', trackedDownloadState: 'importing', size: 100_000_000, sizeleft: 0 },
+  ]);
+  fs.readdir.mockResolvedValue([{ name: 'movie.mkv', isFile: () => true }]);
+  fs.stat.mockResolvedValue({ size: 40_000_000 });
+
+  await refreshStatuses();
+
+  expect(fs.readdir).toHaveBeenCalledWith('/movies/Some Movie (2020)', { withFileTypes: true });
+  const updateCall = pool.query.mock.calls.find(c =>
+    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
+  );
+  const [status, progress, , , , sizeBytes] = updateCall[1];
+  expect(status).toBe('importing');
+  expect(progress).toBe(40);
+  expect(sizeBytes).toBe(100_000_000);
+});
+
+test('a queue item still queued to import (not yet copying) is also reported as importing', async () => {
+  pool.query
+    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
+    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42 }] })
+    .mockResolvedValueOnce({ rows: [] });
+
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [], path: '/movies/Some Movie (2020)' });
+  mockRadarr.getQueue.mockResolvedValue([
+    { movieId: 42, status: 'completed', trackedDownloadState: 'importPending', size: 100_000_000, sizeleft: 0 },
+  ]);
+  fs.readdir.mockResolvedValue([]);
+
+  await refreshStatuses();
+
+  const updateCall = pool.query.mock.calls.find(c =>
+    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
+  );
+  expect(updateCall[1][0]).toBe('importing');
 });
 
 test('fetches director/runtime/certification/studio/ratings/cast/crew when unknown', async () => {

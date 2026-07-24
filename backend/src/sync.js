@@ -1,4 +1,5 @@
 const fs = require('fs/promises');
+const path = require('path');
 const { pool } = require('./db');
 const { fetchList } = require('./letterboxd');
 const { client: radarrClient } = require('./radarr');
@@ -177,6 +178,25 @@ async function reconcileRemovals(list, movies, radarr, plex, qbittorrent) {
   }
 }
 
+// Sums the files directly inside a movie's destination folder — used to
+// show real progress while Radarr is copying the finished download in from
+// /downloads (a slow byte-for-byte copy for large files, not instant).
+async function getFolderSize(folderPath) {
+  try {
+    const entries = await fs.readdir(folderPath, { withFileTypes: true });
+    let total = 0;
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        const stat = await fs.stat(path.join(folderPath, entry.name));
+        total += stat.size;
+      }
+    }
+    return total;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function updateStatuses(radarr) {
   const { rows } = await pool.query(
     `SELECT id, radarr_id, director, credits FROM movies
@@ -193,13 +213,19 @@ async function updateStatuses(radarr) {
       const queueItem = queueByMovieId.get(movie.radarr_id);
       // A queue item just means Radarr grabbed a release — it may still be
       // sitting in the torrent client's own queue (e.g. hit the max
-      // concurrent downloads limit), not actually transferring yet.
+      // concurrent downloads limit), not actually transferring yet. Once the
+      // torrent finishes, Radarr copies it into /movies (slow for large
+      // files, and not instant like a hardlink) before hasFile flips true —
+      // trackedDownloadState catches that in-between window.
       const actuallyDownloading = queueItem?.status === 'downloading';
+      const importingNow = ['importing', 'importPending'].includes(queueItem?.trackedDownloadState);
       const status = data.hasFile
         ? 'downloaded'
         : actuallyDownloading
           ? 'downloading'
-          : 'queued';
+          : importingNow
+            ? 'importing'
+            : 'queued';
 
       let progress = null;
       let sizeBytes = null;
@@ -209,6 +235,12 @@ async function updateStatuses(radarr) {
       } else if (actuallyDownloading && queueItem.size) {
         progress = Math.round(((queueItem.size - queueItem.sizeleft) / queueItem.size) * 1000) / 10;
         sizeBytes = queueItem.size;
+      } else if (importingNow && queueItem?.size) {
+        sizeBytes = queueItem.size;
+        const importedSoFar = data.path ? await getFolderSize(data.path) : null;
+        if (importedSoFar != null) {
+          progress = Math.min(100, Math.round((importedSoFar / sizeBytes) * 1000) / 10);
+        }
       } else if (queueItem?.size) {
         sizeBytes = queueItem.size; // known size even if not actively downloading yet
       }
