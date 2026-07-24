@@ -32,7 +32,10 @@ export default function Movies() {
 
   useEffect(() => {
     getLists().then(setLists).catch(() => {});
-    getSettings().then(s => setRadarrUrl(s.radarr_url ?? '')).catch(() => {});
+    // radarr_url is the internal Docker hostname used for backend API calls
+    // (e.g. http://radarr:7878) — a browser can't resolve that, so the
+    // click-through link needs the separate browser-accessible URL.
+    getSettings().then(s => setRadarrUrl(s.radarr_external_url ?? '')).catch(() => {});
   }, []);
 
   useEffect(() => {

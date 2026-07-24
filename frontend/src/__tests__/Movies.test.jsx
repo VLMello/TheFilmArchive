@@ -12,7 +12,7 @@ vi.mock('../api', () => ({
 }));
 
 const MOVIES = [
-  { id: 1, title: 'Alien', year: 1979, status: 'downloaded', radarr_error: null, list_id: 1, list_name: 'A', created_at: '2026-01-01T00:00:00Z', size_bytes: 10_000_000_000, progress: 100 },
+  { id: 1, title: 'Alien', year: 1979, status: 'downloaded', radarr_error: null, radarr_id: 101, list_id: 1, list_name: 'A', created_at: '2026-01-01T00:00:00Z', size_bytes: 10_000_000_000, progress: 100 },
   { id: 2, title: 'Brazil', year: 1985, status: 'pending', radarr_error: 'No match found in Radarr', list_id: 1, list_name: 'A', created_at: '2026-01-03T00:00:00Z', size_bytes: null, progress: null },
   { id: 3, title: 'Citizen Kane', year: 1941, status: 'queued', radarr_error: null, list_id: 2, list_name: 'B', created_at: '2026-01-02T00:00:00Z', size_bytes: null, progress: null },
   { id: 4, title: 'Dune', year: 2021, status: 'downloading', radarr_error: null, list_id: 1, list_name: 'A', created_at: '2026-01-04T00:00:00Z', size_bytes: 20_000_000_000, progress: 25 },
@@ -155,6 +155,22 @@ test('Sync Now polls status until running is false, then stops', async () => {
   const callsAfterDone = getSyncStatus.mock.calls.length;
   await act(() => vi.advanceTimersByTimeAsync(4000));
   expect(getSyncStatus.mock.calls.length).toBe(callsAfterDone);
+});
+
+test('clicking a card opens the browser-accessible Radarr URL, not the internal one', async () => {
+  getMovies.mockResolvedValue(MOVIES);
+  getSettings.mockResolvedValue({
+    radarr_url: 'http://radarr:7878', // internal Docker hostname — not resolvable by a browser
+    radarr_external_url: 'http://192.168.0.154:7878',
+  });
+  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => {});
+
+  render(<Movies />);
+  const card = (await screen.findByText('Alien')).closest('.movie-card');
+  fireEvent.click(card);
+
+  expect(openSpy).toHaveBeenCalledWith('http://192.168.0.154:7878/movie/101', '_blank');
+  openSpy.mockRestore();
 });
 
 test('shows an error banner when fetching movies fails', async () => {

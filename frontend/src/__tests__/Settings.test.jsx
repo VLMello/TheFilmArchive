@@ -26,7 +26,8 @@ test('renders the Radarr/Prowlarr/Plex sub-section headings and their fields', a
   expect(await screen.findByText('Radarr')).toBeInTheDocument();
   expect(screen.getByText('Prowlarr')).toBeInTheDocument();
   expect(screen.getByText('Plex')).toBeInTheDocument();
-  expect(screen.getByText('Radarr URL')).toBeInTheDocument();
+  expect(screen.getByText('Radarr URL (internal, for API calls)')).toBeInTheDocument();
+  expect(screen.getByText('Radarr URL (browser-accessible)')).toBeInTheDocument();
   expect(screen.getByText('Prowlarr API Key')).toBeInTheDocument();
   expect(screen.getByText('Plex Movies Path')).toBeInTheDocument();
 });

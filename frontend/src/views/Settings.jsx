@@ -7,7 +7,8 @@ const SETTING_GROUPS = [
   {
     title: 'Radarr',
     fields: [
-      { key: 'radarr_url',                label: 'Radarr URL',         placeholder: 'http://localhost:7878' },
+      { key: 'radarr_url',                label: 'Radarr URL (internal, for API calls)', placeholder: 'http://radarr:7878' },
+      { key: 'radarr_external_url',       label: 'Radarr URL (browser-accessible)',       placeholder: 'http://192.168.0.154:7878' },
       { key: 'radarr_api_key',            label: 'Radarr API Key',     placeholder: 'your-api-key' },
       { key: 'radarr_quality_profile_id', label: 'Quality Profile ID', placeholder: '1' },
       { key: 'radarr_root_folder_path',   label: 'Root Folder Path',   placeholder: '/movies' },
