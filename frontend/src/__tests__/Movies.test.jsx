@@ -1,13 +1,14 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import Movies from '../views/Movies';
-import { getMovies, getLists, getSyncStatus, triggerSync } from '../api';
+import { getMovies, getLists, getSyncStatus, triggerSync, getStorage } from '../api';
 
 vi.mock('../api', () => ({
   getMovies: vi.fn(),
   getLists: vi.fn(),
   getSyncStatus: vi.fn(),
   triggerSync: vi.fn(),
+  getStorage: vi.fn(),
 }));
 
 const mockNavigate = vi.fn();
@@ -31,6 +32,7 @@ beforeEach(() => {
     { id: 2, name: 'B', url: 'https://letterboxd.com/x/list/b/', last_synced_at: null },
   ]);
   getSyncStatus.mockResolvedValue({ running: false, lastSyncedAt: null });
+  getStorage.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -140,6 +142,32 @@ test('shows progress-with-size and an "importing" chip for a movie being copied 
   expect(await screen.findByText('3.0 GB / 7.5 GB (40%)')).toBeInTheDocument(); // Arrival, importing
   const card = (await screen.findByText('Arrival')).closest('.movie-card');
   expect(card.querySelector('.chip-importing')).toHaveTextContent('importing');
+});
+
+test('shows total storage used with no warning when plenty of space is free', async () => {
+  getMovies.mockResolvedValue(MOVIES);
+  getStorage.mockResolvedValue({ totalBytes: 1_000_000_000_000, usedBytes: 600_000_000_000, freeBytes: 400_000_000_000 });
+  render(<Movies />);
+
+  expect(await screen.findByText('558.8 GB / 931.3 GB used')).toBeInTheDocument();
+  expect(screen.queryByText('⚠ Low disk space')).not.toBeInTheDocument();
+});
+
+test('shows a low disk space warning when free space drops under 100GB', async () => {
+  getMovies.mockResolvedValue(MOVIES);
+  getStorage.mockResolvedValue({ totalBytes: 1_000_000_000_000, usedBytes: 950_000_000_000, freeBytes: 50_000_000_000 });
+  render(<Movies />);
+
+  expect(await screen.findByText('⚠ Low disk space')).toBeInTheDocument();
+});
+
+test('does not render a storage bar while storage info has not loaded', async () => {
+  getMovies.mockResolvedValue(MOVIES);
+  getStorage.mockResolvedValue(null);
+  render(<Movies />);
+  await screen.findByText('Alien');
+
+  expect(screen.queryByText(/used$/)).not.toBeInTheDocument();
 });
 
 test('Sync Now polls status until running is false, then stops', async () => {

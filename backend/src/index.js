@@ -24,6 +24,7 @@ app.use('/api/lists', require('./routes/lists'));
 app.use('/api/movies', require('./routes/movies'));
 app.use('/api/sync', require('./routes/sync'));
 app.use('/api/settings', require('./routes/settings'));
+app.use('/api/storage', require('./routes/storage'));
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {

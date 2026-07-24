@@ -15,6 +15,7 @@ vi.mock('../api', () => ({
   getSyncStatus: vi.fn().mockResolvedValue({ running: false, lastSyncedAt: null }),
   getMovies: vi.fn().mockResolvedValue([]),
   triggerSync: vi.fn(),
+  getStorage: vi.fn().mockResolvedValue(null),
   getSettings: vi.fn().mockResolvedValue({}),
   updateSettings: vi.fn(),
   addList: vi.fn(),

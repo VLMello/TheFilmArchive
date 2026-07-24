@@ -25,6 +25,8 @@ export const getMovie     = (id) => fetch(`${BASE}/movies/${id}`).then(json);
 export const triggerSync  = () => fetch(`${BASE}/sync`, { method: 'POST' }).then(json);
 export const getSyncStatus = () => fetch(`${BASE}/sync/status`).then(json);
 
+export const getStorage    = () => fetch(`${BASE}/storage`).then(json);
+
 export const getSettings    = () => fetch(`${BASE}/settings`).then(json);
 export const updateSettings = (data) => fetch(`${BASE}/settings`, {
   method: 'PUT',

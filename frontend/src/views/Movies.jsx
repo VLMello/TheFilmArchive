@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getMovies, getLists, getSyncStatus, triggerSync } from '../api';
+import { getMovies, getLists, getSyncStatus, triggerSync, getStorage } from '../api';
 import ErrorBanner from '../components/ErrorBanner';
 import LoadingState from '../components/LoadingState';
 import { formatBytes } from '../format';
 
 const STATUS_OPTIONS = ['', 'pending', 'queued', 'downloading', 'importing', 'downloaded'];
 const STATUSES = ['pending', 'queued', 'downloading', 'importing', 'downloaded'];
+const LOW_STORAGE_THRESHOLD_BYTES = 100 * 1024 ** 3;
 
 const SORTERS = {
   newest: (a, b) => new Date(b.created_at) - new Date(a.created_at),
@@ -31,8 +32,19 @@ export default function Movies() {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState(null);
 
+  const [storage, setStorage] = useState(null);
+
   useEffect(() => {
     getLists().then(setLists).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    function loadStorage() {
+      getStorage().then(setStorage).catch(() => {});
+    }
+    loadStorage();
+    const poll = setInterval(loadStorage, 15000);
+    return () => clearInterval(poll);
   }, []);
 
   useEffect(() => {
@@ -147,6 +159,25 @@ export default function Movies() {
             ))}
           </div>
         </div>
+
+        {storage && (
+          <div className="row" style={{ marginTop: 8 }}>
+            <div className="progress-bar" style={{ flex: '1 1 240px', maxWidth: 320, margin: 0 }}>
+              <div
+                className={`progress-fill${storage.freeBytes < LOW_STORAGE_THRESHOLD_BYTES ? ' progress-fill-warning' : ''}`}
+                style={{ width: `${Math.min(100, Math.round((storage.usedBytes / storage.totalBytes) * 100))}%` }}
+              />
+              <span className="progress-label">
+                {formatBytes(storage.usedBytes)} / {formatBytes(storage.totalBytes)} used
+              </span>
+            </div>
+            {storage.freeBytes < LOW_STORAGE_THRESHOLD_BYTES && (
+              <span className="chip chip-error" title={`Only ${formatBytes(storage.freeBytes)} free`}>
+                ⚠ Low disk space
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="row" style={{ marginBottom: 16 }}>

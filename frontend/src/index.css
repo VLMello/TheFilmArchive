@@ -224,6 +224,10 @@ nav .nav-links { display: flex; gap: var(--space-4); align-items: center; }
   border-right: 2px solid #6af56a;
   transition: width 0.3s ease;
 }
+.progress-fill-warning {
+  background: #3a1a1a;
+  border-right-color: #f56a6a;
+}
 .progress-label {
   position: relative;
   display: block;
