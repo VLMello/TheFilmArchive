@@ -198,10 +198,12 @@ export default function Movies() {
             <div
               key={m.id}
               className="movie-card"
-              style={{ cursor: m.radarr_id && radarrUrl ? 'pointer' : 'default' }}
+              style={{ cursor: m.tmdb_id && radarrUrl ? 'pointer' : 'default' }}
               onClick={() => {
-                if (m.radarr_id && radarrUrl) {
-                  window.open(`${radarrUrl}/movie/${m.radarr_id}`, '_blank');
+                if (m.tmdb_id && radarrUrl) {
+                  // Radarr's web UI routes by titleSlug (== tmdbId), not its
+                  // internal database id.
+                  window.open(`${radarrUrl}/movie/${m.tmdb_id}`, '_blank');
                 }
               }}
             >
