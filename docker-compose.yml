@@ -21,7 +21,7 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       FLARESOLVERR_URL: http://flaresolverr:8191/v1
     volumes:
-      - ${MOVIES_PATH}:/movies
+      - ${MEDIA_ROOT}:/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,8 +65,7 @@ services:
       TZ: ${TZ}
     volumes:
       - ./radarr:/config
-      - ${MOVIES_PATH}:/movies
-      - ${DOWNLOADS_PATH}:/downloads
+      - ${MEDIA_ROOT}:/data
     ports:
       - "7878:7878"
 
