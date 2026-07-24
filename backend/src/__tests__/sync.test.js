@@ -39,6 +39,19 @@ const SETTINGS_ROWS = [
   { key: 'radarr_root_folder_path', value: '/movies' },
 ];
 
+// pool.query is dispatched by matching a distinctive substring of the SQL
+// text rather than hard-coding call order — the sync/reconcile pipeline now
+// makes a variable number of calls per list, so a strict sequential chain of
+// mockResolvedValueOnce would be extremely brittle here.
+function mockDb(handlers) {
+  pool.query.mockImplementation((sql, params = []) => {
+    for (const [pattern, fn] of handlers) {
+      if (sql.includes(pattern)) return Promise.resolve(fn(params) ?? { rows: [] });
+    }
+    return Promise.resolve({ rows: [] });
+  });
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   radarrClientFactory.mockReturnValue(mockRadarr);
@@ -47,7 +60,12 @@ beforeEach(() => {
   fs.rm.mockResolvedValue();
   mockRadarr.getHistory.mockResolvedValue([]);
   mockRadarr.getCredits.mockResolvedValue([]);
+  mockRadarr.getQueue.mockResolvedValue([]);
 });
+
+function callsMatching(pattern) {
+  return pool.query.mock.calls.filter(c => typeof c[0] === 'string' && c[0].includes(pattern));
+}
 
 test('getStatus returns not running initially', () => {
   const status = getStatus();
@@ -56,20 +74,16 @@ test('getStatus returns not running initially', () => {
 });
 
 test('runSync adds new movie to Radarr and sets status queued', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS }) // settings
-    .mockResolvedValueOnce({ rows: [{ id: 1, url: 'https://letterboxd.com/user/list/queue' }] }) // lists
-    .mockResolvedValueOnce({ rows: [] }) // exists check → not found
-    .mockResolvedValueOnce({ rows: [] }) // INSERT movie
-    // reconcileRemovals: the movie we just added is still on the list, nothing stale
-    .mockResolvedValueOnce({ rows: [{ id: 99, letterboxd_slug: 'the-godfather', radarr_id: 42, title: 'The Godfather' }] })
-    .mockResolvedValueOnce({ rows: [] }) // UPDATE list last_synced_at
-    .mockResolvedValueOnce({ rows: [] }); // non-downloaded movies for status update
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT * FROM lists', () => ({ rows: [{ id: 1, name: 'Queue', url: 'https://letterboxd.com/user/list/queue' }] })],
+    ['SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id', () => ({ rows: [] })],
+    ['SELECT id, radarr_error FROM movies', () => ({ rows: [] })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [] })],
+  ]);
   fetchList.mockResolvedValue([{ title: 'The Godfather', year: 1972, slug: 'the-godfather' }]);
   mockRadarr.lookup.mockResolvedValue({ tmdbId: 238, title: 'The Godfather', year: 1972 });
   mockRadarr.add.mockResolvedValue({ id: 42, title: 'The Godfather' });
-  mockRadarr.getQueue.mockResolvedValue([]);
 
   await runSync();
 
@@ -80,9 +94,7 @@ test('runSync adds new movie to Radarr and sets status queued', async () => {
     '1',
     '/movies'
   );
-  const insertCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('INSERT INTO movies')
-  );
+  const insertCall = callsMatching('INSERT INTO movies')[0];
   expect(insertCall).toBeTruthy();
   expect(insertCall[1]).toContain(42); // radarr_id
 
@@ -91,44 +103,34 @@ test('runSync adds new movie to Radarr and sets status queued', async () => {
 });
 
 test('runSync records radarr_error when lookup returns null', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, url: 'https://letterboxd.com/user/list/queue' }] })
-    .mockResolvedValueOnce({ rows: [] })  // not exists check
-    .mockResolvedValueOnce({ rows: [] })  // INSERT with error
-    .mockResolvedValueOnce({ rows: [] })  // reconcileRemovals: nothing tracked yet
-    .mockResolvedValueOnce({ rows: [] })  // UPDATE last_synced_at
-    .mockResolvedValueOnce({ rows: [] }); // status poll
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT * FROM lists', () => ({ rows: [{ id: 1, name: 'Queue', url: 'https://letterboxd.com/user/list/queue' }] })],
+    ['SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id', () => ({ rows: [] })],
+    ['SELECT id, radarr_error FROM movies', () => ({ rows: [] })],
+  ]);
   fetchList.mockResolvedValue([{ title: 'Unknown Film', year: 1900, slug: 'unknown-film' }]);
   mockRadarr.lookup.mockResolvedValue(null);
-  mockRadarr.getQueue.mockResolvedValue([]);
 
   await runSync();
 
-  const insertCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('INSERT INTO movies') && c[1]?.includes('No match found in Radarr')
-  );
+  const insertCall = callsMatching('INSERT INTO movies').find(c => c[1]?.includes('No match found in Radarr'));
   expect(insertCall).toBeTruthy();
 });
 
-test('removes a movie no longer on the list from Radarr, qBittorrent, disk, and the DB, then nudges Plex', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS }) // settings
-    .mockResolvedValueOnce({ rows: [{ id: 1, name: 'Next in Line', url: 'https://letterboxd.com/user/list/queue' }] }) // lists
-    // reconcileRemovals: DB has a movie whose slug isn't in the fresh scrape
-    .mockResolvedValueOnce({ rows: [{ id: 5, letterboxd_slug: 'gone-movie', radarr_id: 7, title: 'Gone Movie' }] })
-    .mockResolvedValueOnce({ rows: [] }) // DELETE FROM movies
-    .mockResolvedValueOnce({ rows: [] }) // UPDATE list last_synced_at
-    .mockResolvedValueOnce({ rows: [] }); // status poll (nothing left to check)
-
-  fetchList.mockResolvedValue([]); // list is now empty
+test('removes a movie no longer on any tracked list from Radarr, qBittorrent, disk, and the DB, then nudges Plex', async () => {
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT * FROM lists', () => ({ rows: [{ id: 1, name: 'Next in Line', url: 'https://letterboxd.com/user/list/queue' }] })],
+    ['SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id',
+      () => ({ rows: [{ id: 5, letterboxd_slug: 'gone-movie', radarr_id: 7, title: 'Gone Movie' }] })],
+  ]);
+  fetchList.mockResolvedValue([]); // list is now empty, and no other list has this slug either
   mockRadarr.get.mockResolvedValue({ path: '/movies/Gone Movie (2020)' });
   mockRadarr.getHistory.mockResolvedValue([
     { eventType: 'grabbed', data: { torrentInfoHash: 'ABCHASH123' } },
   ]);
   mockRadarr.remove.mockResolvedValue();
-  mockRadarr.getQueue.mockResolvedValue([]);
 
   await runSync();
 
@@ -138,9 +140,7 @@ test('removes a movie no longer on the list from Radarr, qBittorrent, disk, and 
   expect(fs.rm).toHaveBeenCalledWith('/movies/Gone Movie (2020)', { recursive: true, force: true });
   expect(mockQbittorrent.removeByHash).toHaveBeenCalledWith('ABCHASH123');
 
-  const deleteCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('DELETE FROM movies')
-  );
+  const deleteCall = callsMatching('DELETE FROM movies')[0];
   expect(deleteCall).toBeTruthy();
   expect(deleteCall[1]).toEqual([5]);
 
@@ -148,81 +148,131 @@ test('removes a movie no longer on the list from Radarr, qBittorrent, disk, and 
 });
 
 test('still removes the movie even if no download hash can be found', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, name: 'Next in Line', url: 'https://letterboxd.com/user/list/queue' }] })
-    .mockResolvedValueOnce({ rows: [{ id: 5, letterboxd_slug: 'gone-movie', radarr_id: 7, title: 'Gone Movie' }] })
-    .mockResolvedValueOnce({ rows: [] }) // DELETE FROM movies
-    .mockResolvedValueOnce({ rows: [] }) // UPDATE list last_synced_at
-    .mockResolvedValueOnce({ rows: [] }); // status poll
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT * FROM lists', () => ({ rows: [{ id: 1, name: 'Next in Line', url: 'https://letterboxd.com/user/list/queue' }] })],
+    ['SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id',
+      () => ({ rows: [{ id: 5, letterboxd_slug: 'gone-movie', radarr_id: 7, title: 'Gone Movie' }] })],
+  ]);
   fetchList.mockResolvedValue([]);
   mockRadarr.get.mockResolvedValue({ path: '/movies/Gone Movie (2020)' });
   mockRadarr.getHistory.mockResolvedValue([]); // no grabbed event on record
   mockRadarr.remove.mockResolvedValue();
-  mockRadarr.getQueue.mockResolvedValue([]);
 
   await runSync();
 
   expect(mockQbittorrent.removeByHash).not.toHaveBeenCalled();
-  const deleteCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('DELETE FROM movies')
-  );
-  expect(deleteCall).toBeTruthy();
+  expect(callsMatching('DELETE FROM movies')[0]).toBeTruthy();
 });
 
 test('keeps the DB row and does not delete files if Radarr is unreachable', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, name: 'Next in Line', url: 'https://letterboxd.com/user/list/queue' }] })
-    .mockResolvedValueOnce({ rows: [{ id: 5, letterboxd_slug: 'gone-movie', radarr_id: 7, title: 'Gone Movie' }] })
-    .mockResolvedValueOnce({ rows: [] }) // UPDATE list last_synced_at
-    .mockResolvedValueOnce({ rows: [] }); // status poll
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT * FROM lists', () => ({ rows: [{ id: 1, name: 'Next in Line', url: 'https://letterboxd.com/user/list/queue' }] })],
+    ['SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id',
+      () => ({ rows: [{ id: 5, letterboxd_slug: 'gone-movie', radarr_id: 7, title: 'Gone Movie' }] })],
+  ]);
   fetchList.mockResolvedValue([]);
   mockRadarr.get.mockRejectedValue({ message: 'network error', response: undefined });
-  mockRadarr.getQueue.mockResolvedValue([]);
 
   await runSync();
 
   expect(mockRadarr.remove).not.toHaveBeenCalled();
   expect(fs.rm).not.toHaveBeenCalled();
   expect(mockQbittorrent.removeByHash).not.toHaveBeenCalled();
-  const deleteCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('DELETE FROM movies')
-  );
-  expect(deleteCall).toBeFalsy();
+  expect(callsMatching('DELETE FROM movies')[0]).toBeFalsy();
   expect(mockPlex.refreshAndClean).not.toHaveBeenCalled();
 });
 
 test('still cleans up the DB row when Radarr already lost track of the movie (404)', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, name: 'Next in Line', url: 'https://letterboxd.com/user/list/queue' }] })
-    .mockResolvedValueOnce({ rows: [{ id: 5, letterboxd_slug: 'gone-movie', radarr_id: 7, title: 'Gone Movie' }] })
-    .mockResolvedValueOnce({ rows: [] }) // DELETE FROM movies
-    .mockResolvedValueOnce({ rows: [] }) // UPDATE list last_synced_at
-    .mockResolvedValueOnce({ rows: [] }); // status poll
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT * FROM lists', () => ({ rows: [{ id: 1, name: 'Next in Line', url: 'https://letterboxd.com/user/list/queue' }] })],
+    ['SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id',
+      () => ({ rows: [{ id: 5, letterboxd_slug: 'gone-movie', radarr_id: 7, title: 'Gone Movie' }] })],
+  ]);
   fetchList.mockResolvedValue([]);
   mockRadarr.get.mockRejectedValue({ message: 'not found', response: { status: 404 } });
-  mockRadarr.getQueue.mockResolvedValue([]);
 
   await runSync();
 
-  const deleteCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('DELETE FROM movies')
-  );
-  expect(deleteCall).toBeTruthy();
+  expect(callsMatching('DELETE FROM movies')[0]).toBeTruthy();
   expect(fs.rm).not.toHaveBeenCalled(); // no folder path known, nothing to clean
 });
 
-test('a queue item that is not actually transferring yet is reported as queued, not downloading', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42 }] }) // non-downloaded movies
-    .mockResolvedValueOnce({ rows: [] }); // UPDATE movies
+test('moves a movie between lists instead of deleting and re-downloading it', async () => {
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT * FROM lists', () => ({
+      rows: [
+        { id: 1, name: 'Old List', url: 'https://letterboxd.com/user/list/old' },
+        { id: 2, name: 'New List', url: 'https://letterboxd.com/user/list/new' },
+      ],
+    })],
+    ['SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id', (params) => {
+      if (params[0] === 1) return { rows: [{ id: 26, letterboxd_slug: 'michael-2026', radarr_id: 24, title: 'Michael' }] };
+      return { rows: [] }; // list 2 has no DB rows yet — Michael is new to it
+    }],
+    // Conflict check for the move: destination list (2) has no independent row for this slug
+    ['SELECT id FROM movies WHERE letterboxd_slug', () => ({ rows: [] })],
+    ['SELECT id, radarr_error FROM movies', () => ({ rows: [] })], // won't be reached for Michael, but list 2's own fresh addNewMovies pass runs
+  ]);
+  fetchList.mockImplementation((url) => {
+    if (url.endsWith('/old')) return Promise.resolve([]); // Michael removed from the old list
+    return Promise.resolve([{ title: 'Michael', year: 2026, slug: 'michael-2026' }]); // and now on the new one
+  });
 
+  await runSync();
+
+  const moveCall = callsMatching('UPDATE movies SET list_id')[0];
+  expect(moveCall).toBeTruthy();
+  expect(moveCall[1]).toEqual([2, 26]);
+
+  // No destructive action taken — the existing Radarr entry/file is left alone
+  expect(mockRadarr.remove).not.toHaveBeenCalled();
+  expect(fs.rm).not.toHaveBeenCalled();
+  expect(mockQbittorrent.removeByHash).not.toHaveBeenCalled();
+  expect(callsMatching('DELETE FROM movies')[0]).toBeFalsy();
+  // Radarr never gets asked to add "Michael" fresh, since after the move
+  // list 2's own exists-check would find the (now repointed) row
+  expect(mockRadarr.add).not.toHaveBeenCalled();
+});
+
+test('falls back to a normal removal when the destination list already independently tracks the movie', async () => {
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT * FROM lists', () => ({
+      rows: [
+        { id: 1, name: 'Old List', url: 'https://letterboxd.com/user/list/old' },
+        { id: 2, name: 'New List', url: 'https://letterboxd.com/user/list/new' },
+      ],
+    })],
+    ['SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id', (params) => {
+      if (params[0] === 1) return { rows: [{ id: 26, letterboxd_slug: 'michael-2026', radarr_id: 24, title: 'Michael' }] };
+      return { rows: [] };
+    }],
+    // Conflict check: list 2 ALREADY has its own independent row for this slug
+    ['SELECT id FROM movies WHERE letterboxd_slug', () => ({ rows: [{ id: 99 }] })],
+  ]);
+  fetchList.mockImplementation((url) => {
+    if (url.endsWith('/old')) return Promise.resolve([]);
+    return Promise.resolve([{ title: 'Michael', year: 2026, slug: 'michael-2026' }]);
+  });
+  mockRadarr.get.mockResolvedValue({ path: '/movies/Michael (2026)' });
+  mockRadarr.remove.mockResolvedValue();
+
+  await runSync();
+
+  expect(callsMatching('UPDATE movies SET list_id')[0]).toBeFalsy();
+  expect(mockRadarr.remove).toHaveBeenCalledWith(24);
+  expect(callsMatching('DELETE FROM movies')[0]).toBeTruthy();
+});
+
+test('a queue item that is not actually transferring yet is reported as queued, not downloading', async () => {
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42 }] })],
+  ]);
   mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
   mockRadarr.getQueue.mockResolvedValue([
     { movieId: 42, status: 'queued', size: 5_000_000_000, sizeleft: 5_000_000_000 },
@@ -230,9 +280,7 @@ test('a queue item that is not actually transferring yet is reported as queued, 
 
   await refreshStatuses();
 
-  const updateCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
-  );
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
   expect(updateCall).toBeTruthy();
   const [status, progress, , , , sizeBytes] = updateCall[1];
   expect(status).toBe('queued');
@@ -241,11 +289,10 @@ test('a queue item that is not actually transferring yet is reported as queued, 
 });
 
 test('a queue item that is actually transferring is reported as downloading with progress', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42 }] })
-    .mockResolvedValueOnce({ rows: [] });
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42 }] })],
+  ]);
   mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
   mockRadarr.getQueue.mockResolvedValue([
     { movieId: 42, status: 'downloading', size: 10_000_000_000, sizeleft: 7_500_000_000 },
@@ -253,20 +300,17 @@ test('a queue item that is actually transferring is reported as downloading with
 
   await refreshStatuses();
 
-  const updateCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
-  );
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
   const [status, progress] = updateCall[1];
   expect(status).toBe('downloading');
   expect(progress).toBe(25);
 });
 
 test('a finished torrent still being copied into /movies is reported as importing with real progress', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42 }] })
-    .mockResolvedValueOnce({ rows: [] });
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42 }] })],
+  ]);
   mockRadarr.get.mockResolvedValue({
     hasFile: false, overview: null, genres: [], images: [], path: '/movies/Some Movie (2020)',
   });
@@ -279,9 +323,7 @@ test('a finished torrent still being copied into /movies is reported as importin
   await refreshStatuses();
 
   expect(fs.readdir).toHaveBeenCalledWith('/movies/Some Movie (2020)', { withFileTypes: true });
-  const updateCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
-  );
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
   const [status, progress, , , , sizeBytes] = updateCall[1];
   expect(status).toBe('importing');
   expect(progress).toBe(40);
@@ -289,11 +331,10 @@ test('a finished torrent still being copied into /movies is reported as importin
 });
 
 test('a queue item still queued to import (not yet copying) is also reported as importing', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42 }] })
-    .mockResolvedValueOnce({ rows: [] });
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42 }] })],
+  ]);
   mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [], path: '/movies/Some Movie (2020)' });
   mockRadarr.getQueue.mockResolvedValue([
     { movieId: 42, status: 'completed', trackedDownloadState: 'importPending', size: 100_000_000, sizeleft: 0 },
@@ -302,20 +343,16 @@ test('a queue item still queued to import (not yet copying) is also reported as 
 
   await refreshStatuses();
 
-  const updateCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
-  );
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
   expect(updateCall[1][0]).toBe('importing');
 });
 
 test('nudges Plex once a movie finishes importing and becomes downloaded', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, status: 'importing' }] })
-    .mockResolvedValueOnce({ rows: [] }); // UPDATE movies
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42, status: 'importing' }] })],
+  ]);
   mockRadarr.get.mockResolvedValue({ hasFile: true, sizeOnDisk: 100_000_000, overview: null, genres: [], images: [] });
-  mockRadarr.getQueue.mockResolvedValue([]);
 
   await refreshStatuses();
 
@@ -323,11 +360,10 @@ test('nudges Plex once a movie finishes importing and becomes downloaded', async
 });
 
 test('does not nudge Plex when nothing finished importing this cycle', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, status: 'downloading' }] })
-    .mockResolvedValueOnce({ rows: [] });
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42, status: 'downloading' }] })],
+  ]);
   mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
   mockRadarr.getQueue.mockResolvedValue([
     { movieId: 42, status: 'downloading', size: 10_000_000_000, sizeleft: 7_500_000_000 },
@@ -339,26 +375,91 @@ test('does not nudge Plex when nothing finished importing this cycle', async () 
 });
 
 test('does not nudge Plex again for a movie that was already downloaded', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
     // still selected because size_bytes is null, but status is already 'downloaded'
-    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, status: 'downloaded' }] })
-    .mockResolvedValueOnce({ rows: [] });
-
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42, status: 'downloaded' }] })],
+  ]);
   mockRadarr.get.mockResolvedValue({ hasFile: true, sizeOnDisk: 100_000_000, overview: null, genres: [], images: [] });
-  mockRadarr.getQueue.mockResolvedValue([]);
 
   await refreshStatuses();
 
   expect(mockPlex.refresh).not.toHaveBeenCalled();
 });
 
-test('fetches director/runtime/certification/studio/ratings/cast/crew when unknown', async () => {
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, director: null, credits: null }] })
-    .mockResolvedValueOnce({ rows: [] });
+test('marks queue_missing_since the first time Radarr reports no queue item and no file', async () => {
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: null }] })],
+  ]);
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
+  // getQueue defaults to [] in beforeEach — no queue item for movie 42
 
+  await refreshStatuses();
+
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
+  const [, , , , , , , , , , , , queueMissingSince, radarrError] = updateCall[1];
+  expect(queueMissingSince).toBeInstanceOf(Date);
+  expect(radarrError).toBeNull(); // not flagged as stalled yet — first time seeing this
+});
+
+test('flags a movie as stalled once queue_missing_since is older than the threshold', async () => {
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
+      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo }] })],
+  ]);
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
+
+  await refreshStatuses();
+
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
+  const [, , , , , , , , , , , , queueMissingSince, radarrError] = updateCall[1];
+  expect(queueMissingSince).toEqual(twoHoursAgo);
+  expect(radarrError).toMatch(/Stalled/);
+});
+
+test('clears the stalled flag once a queue item reappears', async () => {
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
+      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo }] })],
+  ]);
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
+  mockRadarr.getQueue.mockResolvedValue([
+    { movieId: 42, status: 'queued', size: 1_000_000_000, sizeleft: 1_000_000_000 },
+  ]);
+
+  await refreshStatuses();
+
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
+  const [, , , , , , , , , , , , queueMissingSince, radarrError] = updateCall[1];
+  expect(queueMissingSince).toBeNull();
+  expect(radarrError).toBeNull();
+});
+
+test('clears radarr_id and flags for re-adding when Radarr no longer has the movie at all', async () => {
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42 }] })],
+  ]);
+  mockRadarr.get.mockRejectedValue({ message: 'not found', response: { status: 404 } });
+
+  await refreshStatuses();
+
+  const orphanCall = callsMatching('UPDATE movies SET radarr_id = NULL')[0];
+  expect(orphanCall).toBeTruthy();
+  expect(orphanCall[1]).toEqual([1]);
+});
+
+test('fetches director/runtime/certification/studio/ratings/cast/crew when unknown', async () => {
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
+      () => ({ rows: [{ id: 1, radarr_id: 42, director: null, credits: null }] })],
+  ]);
   mockRadarr.get.mockResolvedValue({
     hasFile: false,
     overview: 'A movie.',
@@ -369,7 +470,6 @@ test('fetches director/runtime/certification/studio/ratings/cast/crew when unkno
     studio: 'Paramount',
     ratings: { imdb: { value: 9.2 } },
   });
-  mockRadarr.getQueue.mockResolvedValue([]);
   mockRadarr.getCredits.mockResolvedValue([
     { type: 'crew', job: 'Director', personName: 'Francis Ford Coppola' },
     { type: 'cast', order: 1, character: 'Michael Corleone', personName: 'Al Pacino' },
@@ -381,9 +481,7 @@ test('fetches director/runtime/certification/studio/ratings/cast/crew when unkno
   await refreshStatuses();
 
   expect(mockRadarr.getCredits).toHaveBeenCalledWith(42);
-  const updateCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
-  );
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
   const [, , , , , , director, runtime, certification, studio, ratings, credits] = updateCall[1];
   expect(director).toBe('Francis Ford Coppola');
   expect(runtime).toBe(175);
@@ -402,20 +500,17 @@ test('fetches director/runtime/certification/studio/ratings/cast/crew when unkno
 
 test('does not look up credits again once director and credits are already known', async () => {
   const existingCredits = { cast: [{ name: 'Marlon Brando', character: 'Vito Corleone' }], crew: [] };
-  pool.query
-    .mockResolvedValueOnce({ rows: SETTINGS_ROWS })
-    .mockResolvedValueOnce({ rows: [{ id: 1, radarr_id: 42, director: 'Francis Ford Coppola', credits: existingCredits }] })
-    .mockResolvedValueOnce({ rows: [] });
-
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
+      () => ({ rows: [{ id: 1, radarr_id: 42, director: 'Francis Ford Coppola', credits: existingCredits }] })],
+  ]);
   mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
-  mockRadarr.getQueue.mockResolvedValue([]);
 
   await refreshStatuses();
 
   expect(mockRadarr.getCredits).not.toHaveBeenCalled();
-  const updateCall = pool.query.mock.calls.find(c =>
-    typeof c[0] === 'string' && c[0].includes('UPDATE movies SET status')
-  );
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
   expect(updateCall[1][6]).toBe('Francis Ford Coppola'); // director unchanged
   expect(JSON.parse(updateCall[1][11])).toEqual(existingCredits); // credits unchanged
 });

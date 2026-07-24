@@ -17,9 +17,12 @@ const NOTABLE_CREW_JOBS = [
   'Director of Photography', 'Original Music Composer', 'Editor', 'Production Design',
 ];
 
-async function syncList(list, radarr, settings, plex, qbittorrent) {
-  const movies = await fetchList(list.url);
+// If Radarr reports absolutely nothing for a movie (no queue item, no file)
+// for longer than this, it's flagged as stalled instead of silently shown
+// as "queued" forever — see updateStatuses.
+const STALL_THRESHOLD_MS = 20 * 60 * 1000;
 
+async function addNewMovies(list, movies, radarr, settings) {
   for (const movie of movies) {
     const { rows } = await pool.query(
       'SELECT id, radarr_error FROM movies WHERE letterboxd_slug = $1 AND list_id = $2',
@@ -89,10 +92,6 @@ async function syncList(list, radarr, settings, plex, qbittorrent) {
       }
     }
   }
-
-  await reconcileRemovals(list, movies, radarr, plex, qbittorrent);
-
-  await pool.query('UPDATE lists SET last_synced_at = NOW() WHERE id = $1', [list.id]);
 }
 
 // Movies that were added because of a list entry, but whose entry has since
@@ -101,7 +100,15 @@ async function syncList(list, radarr, settings, plex, qbittorrent) {
 // deletes the raw file in /downloads — Radarr's own deleteFiles never touches
 // that), a filesystem safety-net pass in case anything's still left behind,
 // TFA's own DB, and a Plex library nudge so the dead entry doesn't linger.
-async function reconcileRemovals(list, movies, radarr, plex, qbittorrent) {
+//
+// slugsByList maps every OTHER list's slug set for this same sync cycle (built
+// upfront in runSync, before any list's removals run) — a movie missing from
+// this list but present on another is a move, not a real removal, and gets
+// re-pointed at its new list instead of being deleted and re-downloaded from
+// scratch (this is exactly what used to happen: moving a movie between lists
+// deleted its Radarr entry and finished download, then re-added and
+// re-downloaded it fresh under the new list).
+async function reconcileRemovals(list, movies, radarr, plex, qbittorrent, slugsByList) {
   const currentSlugs = new Set(movies.map(m => m.slug));
   const { rows } = await pool.query(
     'SELECT id, letterboxd_slug, radarr_id, title FROM movies WHERE list_id = $1',
@@ -113,6 +120,22 @@ async function reconcileRemovals(list, movies, radarr, plex, qbittorrent) {
   let removedAny = false;
 
   for (const row of stale) {
+    const otherListId = [...(slugsByList.get(row.letterboxd_slug) ?? [])].find(id => id !== list.id);
+    if (otherListId != null) {
+      const { rows: conflict } = await pool.query(
+        'SELECT id FROM movies WHERE letterboxd_slug = $1 AND list_id = $2',
+        [row.letterboxd_slug, otherListId]
+      );
+      // Destination list already independently tracks this movie (e.g. added
+      // to both lists at different times) — don't move, fall through to the
+      // normal removal below so the two rows don't collide.
+      if (conflict.length === 0) {
+        await pool.query('UPDATE movies SET list_id = $1 WHERE id = $2', [otherListId, row.id]);
+        console.log(`Moved "${row.title}" from list "${list.name}" to another tracked list — no re-download needed`);
+        continue;
+      }
+    }
+
     if (row.radarr_id) {
       let folderPath = null;
       try {
@@ -195,7 +218,7 @@ async function getFolderSize(folderPath) {
 
 async function updateStatuses(radarr, plex) {
   const { rows } = await pool.query(
-    `SELECT id, radarr_id, director, credits, status FROM movies
+    `SELECT id, radarr_id, director, credits, status, queue_missing_since FROM movies
      WHERE radarr_id IS NOT NULL AND (status != 'downloaded' OR size_bytes IS NULL OR director IS NULL OR credits IS NULL)`
   );
   if (rows.length === 0) return;
@@ -225,6 +248,25 @@ async function updateStatuses(radarr, plex) {
             : 'queued';
 
       if (status === 'downloaded' && movie.status !== 'downloaded') justFinishedImporting = true;
+
+      // Radarr can silently lose track of a grabbed download (observed: a
+      // duplicate/reused release hash meant the queue entry never
+      // materialized despite qBittorrent finishing the download) — nothing
+      // in the queue and no file means TFA would otherwise show "queued"
+      // forever with no way to tell that from a healthy one just waiting
+      // its turn. Flag it as an error once that's been true for a while,
+      // instead of a normal brief gap between polls.
+      let queueMissingSince = movie.queue_missing_since;
+      let stallError = null;
+      if (!data.hasFile && !queueItem) {
+        if (!queueMissingSince) {
+          queueMissingSince = new Date();
+        } else if (Date.now() - new Date(queueMissingSince).getTime() > STALL_THRESHOLD_MS) {
+          stallError = 'Stalled — Radarr shows no active download. Try a manual search in Radarr.';
+        }
+      } else {
+        queueMissingSince = null;
+      }
 
       let progress = null;
       let sizeBytes = null;
@@ -276,11 +318,26 @@ async function updateStatuses(radarr, plex) {
       await pool.query(
         `UPDATE movies SET status = $1, progress = $2, overview = $3, genres = $4, poster_url = $5,
            size_bytes = $6, director = $7, runtime = $8, certification = $9, studio = $10, ratings = $11,
-           credits = $12
-         WHERE id = $13`,
-        [status, progress, overview, genres, poster, sizeBytes, director, runtime, certification, studio, ratings, creditsJson, movie.id]
+           credits = $12, queue_missing_since = $13, radarr_error = $14
+         WHERE id = $15`,
+        [status, progress, overview, genres, poster, sizeBytes, director, runtime, certification, studio, ratings, creditsJson, queueMissingSince, stallError, movie.id]
       );
-    } catch (_) {}
+    } catch (e) {
+      // Radarr no longer has this movie at all (e.g. deleted directly in its
+      // own UI, outside TFA) — clearing radarr_id and setting radarr_error
+      // makes addNewMovies treat it as a fresh add again next sync, instead
+      // of silently never updating this row again.
+      if (e.response?.status === 404) {
+        try {
+          await pool.query(
+            `UPDATE movies SET radarr_id = NULL, queue_missing_since = NULL,
+               radarr_error = 'Radarr no longer has this movie — it will be re-added on the next sync.'
+             WHERE id = $1`,
+            [movie.id]
+          );
+        } catch (_) {}
+      }
+    }
   }
 
   if (justFinishedImporting && plex) {
@@ -301,13 +358,50 @@ async function runSync() {
     const plex = plexClient(settings);
     const qbittorrent = qbittorrentClient(settings);
     const { rows: lists } = await pool.query('SELECT * FROM lists');
+
+    // Every list is scraped up front, before any removal or addition runs,
+    // so a movie moved from list A to list B can be recognized as a move
+    // regardless of which list happens to sync first this cycle — doing
+    // this per-list (the old behavior) meant whichever list processed
+    // first had no way to know the movie had landed on another list.
+    const scraped = new Map();
     for (const list of lists) {
       try {
-        await syncList(list, radarr, settings, plex, qbittorrent);
+        scraped.set(list.id, await fetchList(list.url));
       } catch (e) {
-        console.error(`syncList failed for list "${list.name}":`, e.message);
+        console.error(`Failed to fetch list "${list.name}":`, e.message);
       }
     }
+
+    const slugsByList = new Map();
+    for (const [listId, movies] of scraped) {
+      for (const m of movies) {
+        if (!slugsByList.has(m.slug)) slugsByList.set(m.slug, new Set());
+        slugsByList.get(m.slug).add(listId);
+      }
+    }
+
+    for (const list of lists) {
+      const movies = scraped.get(list.id);
+      if (!movies) continue; // this list's fetch failed — leave its rows alone this cycle
+      try {
+        await reconcileRemovals(list, movies, radarr, plex, qbittorrent, slugsByList);
+      } catch (e) {
+        console.error(`reconcileRemovals failed for list "${list.name}":`, e.message);
+      }
+    }
+
+    for (const list of lists) {
+      const movies = scraped.get(list.id);
+      if (!movies) continue;
+      try {
+        await addNewMovies(list, movies, radarr, settings);
+        await pool.query('UPDATE lists SET last_synced_at = NOW() WHERE id = $1', [list.id]);
+      } catch (e) {
+        console.error(`addNewMovies failed for list "${list.name}":`, e.message);
+      }
+    }
+
     await updateStatuses(radarr, plex);
     lastSyncedAt = new Date();
   } finally {
