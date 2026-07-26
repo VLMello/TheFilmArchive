@@ -18,9 +18,16 @@ const NOTABLE_CREW_JOBS = [
 ];
 
 // If Radarr reports absolutely nothing for a movie (no queue item, no file)
-// for longer than this, it's flagged as stalled instead of silently shown
+// for longer than this, it's treated as stalled instead of silently shown
 // as "queued" forever — see updateStatuses.
 const STALL_THRESHOLD_MS = 20 * 60 * 1000;
+
+// A stall triggers an automatic re-search this many times before giving up
+// and surfacing an error — most stalls are a dead release (no seeders, or
+// the exact "Radarr loses queue tracking" bug this app hit once already),
+// and a fresh search recovers on its own far more often than it needs a
+// human to click "manual search" in Radarr.
+const MAX_STALL_RETRIES = 3;
 
 async function addNewMovies(list, movies, radarr, settings) {
   for (const movie of movies) {
@@ -216,14 +223,34 @@ async function getFolderSize(folderPath) {
   }
 }
 
-async function updateStatuses(radarr, plex) {
+async function updateStatuses(radarr, plex, qbittorrent) {
+  const queue = await radarr.getQueue();
+
+  // Queue-wide hygiene pass, independent of which rows TFA still polls
+  // below — once a movie is fully synced (downloaded, all fields filled
+  // in) its row drops out of the query below entirely, so a queue entry
+  // stuck in "warning" for it (e.g. a re-grab whose qBittorrent copy went
+  // missing after import) would otherwise never get revisited and would
+  // sit there forever even though Radarr already has nothing left to do.
+  for (const item of queue) {
+    if (item.status !== 'warning') continue;
+    try {
+      const movieData = await radarr.get(item.movieId);
+      if (movieData.hasFile) {
+        await radarr.removeQueueItem(item.id, { removeFromClient: true, blocklist: false });
+        console.log(`Cleared a stuck queue entry for "${movieData.title}" — file was already downloaded`);
+      }
+    } catch (e) {
+      console.error(`Failed to inspect/clean queue entry ${item.id}:`, e.message);
+    }
+  }
+
   const { rows } = await pool.query(
-    `SELECT id, radarr_id, director, credits, status, queue_missing_since FROM movies
+    `SELECT id, radarr_id, director, credits, status, queue_missing_since, stall_retry_count FROM movies
      WHERE radarr_id IS NOT NULL AND (status != 'downloaded' OR size_bytes IS NULL OR director IS NULL OR credits IS NULL)`
   );
   if (rows.length === 0) return;
 
-  const queue = await radarr.getQueue();
   const queueByMovieId = new Map(queue.map(q => [q.movieId, q]));
   let justFinishedImporting = false;
 
@@ -254,18 +281,40 @@ async function updateStatuses(radarr, plex) {
       // materialized despite qBittorrent finishing the download) — nothing
       // in the queue and no file means TFA would otherwise show "queued"
       // forever with no way to tell that from a healthy one just waiting
-      // its turn. Flag it as an error once that's been true for a while,
-      // instead of a normal brief gap between polls.
+      // its turn. Once that's been true for a while, clean up any leftover
+      // download for the previous attempt and ask Radarr to search again —
+      // most stalls resolve themselves this way. Only after repeated
+      // retries still go nowhere does this get surfaced as an error.
       let queueMissingSince = movie.queue_missing_since;
+      let stallRetryCount = movie.stall_retry_count;
       let stallError = null;
       if (!data.hasFile && !queueItem) {
         if (!queueMissingSince) {
           queueMissingSince = new Date();
         } else if (Date.now() - new Date(queueMissingSince).getTime() > STALL_THRESHOLD_MS) {
-          stallError = 'Stalled — Radarr shows no active download. Try a manual search in Radarr.';
+          if (stallRetryCount < MAX_STALL_RETRIES) {
+            stallRetryCount += 1;
+            queueMissingSince = new Date();
+            try {
+              const history = await radarr.getHistory(movie.radarr_id);
+              const grabbed = history.find(h => h.eventType === 'grabbed' && h.data?.torrentInfoHash);
+              if (grabbed?.data?.torrentInfoHash && qbittorrent) {
+                await qbittorrent.removeByHash(grabbed.data.torrentInfoHash);
+              }
+            } catch (_) {}
+            try {
+              await radarr.search(movie.radarr_id);
+              console.log(`Stalled movie ${movie.radarr_id} — retrying automatically (attempt ${stallRetryCount}/${MAX_STALL_RETRIES})`);
+            } catch (e) {
+              console.error(`Retry search failed for movie ${movie.radarr_id}:`, e.message);
+            }
+          } else {
+            stallError = `Stalled after ${MAX_STALL_RETRIES} automatic retries — try a manual search in Radarr.`;
+          }
         }
       } else {
         queueMissingSince = null;
+        stallRetryCount = 0;
       }
 
       let progress = null;
@@ -318,9 +367,9 @@ async function updateStatuses(radarr, plex) {
       await pool.query(
         `UPDATE movies SET status = $1, progress = $2, overview = $3, genres = $4, poster_url = $5,
            size_bytes = $6, director = $7, runtime = $8, certification = $9, studio = $10, ratings = $11,
-           credits = $12, queue_missing_since = $13, radarr_error = $14
-         WHERE id = $15`,
-        [status, progress, overview, genres, poster, sizeBytes, director, runtime, certification, studio, ratings, creditsJson, queueMissingSince, stallError, movie.id]
+           credits = $12, queue_missing_since = $13, radarr_error = $14, stall_retry_count = $15
+         WHERE id = $16`,
+        [status, progress, overview, genres, poster, sizeBytes, director, runtime, certification, studio, ratings, creditsJson, queueMissingSince, stallError, stallRetryCount, movie.id]
       );
     } catch (e) {
       // Radarr no longer has this movie at all (e.g. deleted directly in its
@@ -402,7 +451,7 @@ async function runSync() {
       }
     }
 
-    await updateStatuses(radarr, plex);
+    await updateStatuses(radarr, plex, qbittorrent);
     lastSyncedAt = new Date();
   } finally {
     running = false;
@@ -415,7 +464,8 @@ async function refreshStatuses() {
     const settings = await getSettings();
     const radarr = radarrClient(settings);
     const plex = plexClient(settings);
-    await updateStatuses(radarr, plex);
+    const qbittorrent = qbittorrentClient(settings);
+    await updateStatuses(radarr, plex, qbittorrent);
   } catch (e) {
     console.error('refreshStatuses failed:', e.message);
   }

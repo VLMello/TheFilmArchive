@@ -21,6 +21,8 @@ const mockRadarr = {
   remove: jest.fn(),
   getHistory: jest.fn(),
   getCredits: jest.fn(),
+  search: jest.fn(),
+  removeQueueItem: jest.fn(),
 };
 
 const mockPlex = {
@@ -61,6 +63,8 @@ beforeEach(() => {
   mockRadarr.getHistory.mockResolvedValue([]);
   mockRadarr.getCredits.mockResolvedValue([]);
   mockRadarr.getQueue.mockResolvedValue([]);
+  mockRadarr.search.mockResolvedValue();
+  mockRadarr.removeQueueItem.mockResolvedValue();
 });
 
 function callsMatching(pattern) {
@@ -403,29 +407,52 @@ test('marks queue_missing_since the first time Radarr reports no queue item and 
   expect(radarrError).toBeNull(); // not flagged as stalled yet — first time seeing this
 });
 
-test('flags a movie as stalled once queue_missing_since is older than the threshold', async () => {
+test('retries automatically (cleans up the old download, asks Radarr to search again) the first time a movie is found stalled', async () => {
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
   mockDb([
     ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
     ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
-      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo }] })],
+      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo, stall_retry_count: 0 }] })],
+  ]);
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
+  mockRadarr.getHistory.mockResolvedValue([{ eventType: 'grabbed', data: { torrentInfoHash: 'ABC123' } }]);
+
+  await refreshStatuses();
+
+  expect(mockQbittorrent.removeByHash).toHaveBeenCalledWith('ABC123');
+  expect(mockRadarr.search).toHaveBeenCalledWith(42);
+
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
+  const [, , , , , , , , , , , , queueMissingSince, radarrError, stallRetryCount] = updateCall[1];
+  expect(radarrError).toBeNull(); // still retrying automatically — nothing surfaced to the user yet
+  expect(stallRetryCount).toBe(1);
+  expect(queueMissingSince).toBeInstanceOf(Date); // clock restarted for this attempt
+});
+
+test('surfaces an error only after exhausting all automatic retries', async () => {
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
+      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo, stall_retry_count: 3 }] })],
   ]);
   mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
 
   await refreshStatuses();
 
+  expect(mockRadarr.search).not.toHaveBeenCalled();
   const updateCall = callsMatching('UPDATE movies SET status')[0];
-  const [, , , , , , , , , , , , queueMissingSince, radarrError] = updateCall[1];
-  expect(queueMissingSince).toEqual(twoHoursAgo);
-  expect(radarrError).toMatch(/Stalled/);
+  const [, , , , , , , , , , , , , radarrError, stallRetryCount] = updateCall[1];
+  expect(radarrError).toMatch(/Stalled after 3 automatic retries/);
+  expect(stallRetryCount).toBe(3);
 });
 
-test('clears the stalled flag once a queue item reappears', async () => {
+test('clears the stalled flag and retry count once a queue item reappears', async () => {
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
   mockDb([
     ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
     ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
-      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo }] })],
+      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo, stall_retry_count: 2 }] })],
   ]);
   mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
   mockRadarr.getQueue.mockResolvedValue([
@@ -435,9 +462,23 @@ test('clears the stalled flag once a queue item reappears', async () => {
   await refreshStatuses();
 
   const updateCall = callsMatching('UPDATE movies SET status')[0];
-  const [, , , , , , , , , , , , queueMissingSince, radarrError] = updateCall[1];
+  const [, , , , , , , , , , , , queueMissingSince, radarrError, stallRetryCount] = updateCall[1];
   expect(queueMissingSince).toBeNull();
   expect(radarrError).toBeNull();
+  expect(stallRetryCount).toBe(0);
+});
+
+test('clears a queue entry stuck in "warning" once the file is already downloaded', async () => {
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since', () => ({ rows: [{ id: 1, radarr_id: 42 }] })],
+  ]);
+  mockRadarr.get.mockResolvedValue({ hasFile: true, sizeOnDisk: 123, overview: null, genres: [], images: [], title: 'Michael' });
+  mockRadarr.getQueue.mockResolvedValue([{ movieId: 42, id: 999, status: 'warning' }]);
+
+  await refreshStatuses();
+
+  expect(mockRadarr.removeQueueItem).toHaveBeenCalledWith(999, { removeFromClient: true, blocklist: false });
 });
 
 test('clears radarr_id and flags for re-adding when Radarr no longer has the movie at all', async () => {
