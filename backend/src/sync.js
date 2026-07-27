@@ -276,19 +276,23 @@ async function updateStatuses(radarr, plex, qbittorrent) {
 
       if (status === 'downloaded' && movie.status !== 'downloaded') justFinishedImporting = true;
 
-      // Radarr can silently lose track of a grabbed download (observed: a
-      // duplicate/reused release hash meant the queue entry never
-      // materialized despite qBittorrent finishing the download) — nothing
-      // in the queue and no file means TFA would otherwise show "queued"
-      // forever with no way to tell that from a healthy one just waiting
-      // its turn. Once that's been true for a while, clean up any leftover
-      // download for the previous attempt and ask Radarr to search again —
+      // A movie can be stalled two different ways: Radarr silently loses
+      // track of a grabbed download entirely (nothing in the queue, no
+      // file — observed once already, a duplicate/reused release hash
+      // meant the queue entry never materialized despite qBittorrent
+      // finishing the download), or Radarr keeps the queue entry but flags
+      // it "warning" because the torrent itself is dead (e.g. "stalled
+      // with no connections" — no seeders left). Either way TFA would
+      // otherwise show "queued" forever with no way to tell that from a
+      // healthy one just waiting its turn. Once that's been true for a
+      // while, clean up the dead attempt and ask Radarr to search again —
       // most stalls resolve themselves this way. Only after repeated
       // retries still go nowhere does this get surfaced as an error.
       let queueMissingSince = movie.queue_missing_since;
       let stallRetryCount = movie.stall_retry_count;
       let stallError = null;
-      if (!data.hasFile && !queueItem) {
+      const stalled = !data.hasFile && (!queueItem || queueItem.status === 'warning');
+      if (stalled) {
         if (!queueMissingSince) {
           queueMissingSince = new Date();
         } else if (Date.now() - new Date(queueMissingSince).getTime() > STALL_THRESHOLD_MS) {
@@ -296,10 +300,16 @@ async function updateStatuses(radarr, plex, qbittorrent) {
             stallRetryCount += 1;
             queueMissingSince = new Date();
             try {
-              const history = await radarr.getHistory(movie.radarr_id);
-              const grabbed = history.find(h => h.eventType === 'grabbed' && h.data?.torrentInfoHash);
-              if (grabbed?.data?.torrentInfoHash && qbittorrent) {
-                await qbittorrent.removeByHash(grabbed.data.torrentInfoHash);
+              if (queueItem) {
+                // A queue entry Radarr already gave up on — blocklist it so
+                // the next search doesn't just re-grab the same dead release.
+                await radarr.removeQueueItem(queueItem.id, { removeFromClient: true, blocklist: true });
+              } else {
+                const history = await radarr.getHistory(movie.radarr_id);
+                const grabbed = history.find(h => h.eventType === 'grabbed' && h.data?.torrentInfoHash);
+                if (grabbed?.data?.torrentInfoHash && qbittorrent) {
+                  await qbittorrent.removeByHash(grabbed.data.torrentInfoHash);
+                }
               }
             } catch (_) {}
             try {

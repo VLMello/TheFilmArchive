@@ -429,6 +429,32 @@ test('retries automatically (cleans up the old download, asks Radarr to search a
   expect(queueMissingSince).toBeInstanceOf(Date); // clock restarted for this attempt
 });
 
+test('also retries a movie whose queue entry exists but is stuck in "warning" (e.g. a dead torrent with no seeders)', async () => {
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
+      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo, stall_retry_count: 0 }] })],
+  ]);
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
+  mockRadarr.getQueue.mockResolvedValue([
+    { movieId: 42, id: 777, status: 'warning', errorMessage: 'The download is stalled with no connections' },
+  ]);
+
+  await refreshStatuses();
+
+  // Blocklisted via the queue entry itself, not a qBittorrent hash lookup —
+  // there's an active queue item to work with here, unlike the fully-missing case.
+  expect(mockRadarr.removeQueueItem).toHaveBeenCalledWith(777, { removeFromClient: true, blocklist: true });
+  expect(mockQbittorrent.removeByHash).not.toHaveBeenCalled();
+  expect(mockRadarr.search).toHaveBeenCalledWith(42);
+
+  const updateCall = callsMatching('UPDATE movies SET status')[0];
+  const [, , , , , , , , , , , , , radarrError, stallRetryCount] = updateCall[1];
+  expect(radarrError).toBeNull();
+  expect(stallRetryCount).toBe(1);
+});
+
 test('surfaces an error only after exhausting all automatic retries', async () => {
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
   mockDb([
