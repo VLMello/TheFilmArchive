@@ -23,6 +23,8 @@ const mockRadarr = {
   getCredits: jest.fn(),
   search: jest.fn(),
   removeQueueItem: jest.fn(),
+  getReleases: jest.fn(),
+  grabRelease: jest.fn(),
 };
 
 const mockPlex = {
@@ -65,6 +67,8 @@ beforeEach(() => {
   mockRadarr.getQueue.mockResolvedValue([]);
   mockRadarr.search.mockResolvedValue();
   mockRadarr.removeQueueItem.mockResolvedValue();
+  mockRadarr.getReleases.mockResolvedValue([]);
+  mockRadarr.grabRelease.mockResolvedValue();
 });
 
 function callsMatching(pattern) {
@@ -427,6 +431,43 @@ test('retries automatically (cleans up the old download, asks Radarr to search a
   expect(radarrError).toBeNull(); // still retrying automatically — nothing surfaced to the user yet
   expect(stallRetryCount).toBe(1);
   expect(queueMissingSince).toBeInstanceOf(Date); // clock restarted for this attempt
+});
+
+test('on retry, grabs a lower-quality release with enough seeders instead of re-searching for the starved preferred one', async () => {
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
+      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo, stall_retry_count: 0 }] })],
+  ]);
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
+  mockRadarr.getReleases.mockResolvedValue([
+    { guid: '2160p-dead', indexerId: 1, protocol: 'torrent', seeders: 1, rejections: [] },
+    { guid: '1080p-healthy', indexerId: 1, protocol: 'torrent', seeders: 12, rejections: [] },
+  ]);
+
+  await refreshStatuses();
+
+  expect(mockRadarr.grabRelease).toHaveBeenCalledWith('1080p-healthy', 1);
+  expect(mockRadarr.search).not.toHaveBeenCalled(); // a good-enough release was grabbed directly, no need to fall back
+});
+
+test('falls back to a plain search when no release clears the seeder bar', async () => {
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  mockDb([
+    ['SELECT key, value FROM settings', () => ({ rows: SETTINGS_ROWS })],
+    ['SELECT id, radarr_id, director, credits, status, queue_missing_since',
+      () => ({ rows: [{ id: 1, radarr_id: 42, queue_missing_since: twoHoursAgo, stall_retry_count: 0 }] })],
+  ]);
+  mockRadarr.get.mockResolvedValue({ hasFile: false, overview: null, genres: [], images: [] });
+  mockRadarr.getReleases.mockResolvedValue([
+    { guid: '2160p-dead', indexerId: 1, protocol: 'torrent', seeders: 0, rejections: [] },
+  ]);
+
+  await refreshStatuses();
+
+  expect(mockRadarr.grabRelease).not.toHaveBeenCalled();
+  expect(mockRadarr.search).toHaveBeenCalledWith(42);
 });
 
 test('also retries a movie whose queue entry exists but is stuck in "warning" (e.g. a dead torrent with no seeders)', async () => {

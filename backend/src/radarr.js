@@ -57,6 +57,15 @@ function client(settings) {
       await http.post('/command', { name: 'MoviesSearch', movieIds: [radarrId] });
     },
 
+    async getReleases(radarrId) {
+      const { data } = await http.get('/release', { params: { movieId: radarrId } });
+      return data ?? [];
+    },
+
+    async grabRelease(guid, indexerId) {
+      await http.post('/release', { guid, indexerId });
+    },
+
     async removeQueueItem(queueId, { removeFromClient = true, blocklist = false } = {}) {
       await http.delete(`/queue/${queueId}`, { params: { removeFromClient, blocklist } });
     },

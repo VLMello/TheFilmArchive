@@ -29,6 +29,40 @@ const STALL_THRESHOLD_MS = 20 * 60 * 1000;
 // human to click "manual search" in Radarr.
 const MAX_STALL_RETRIES = 3;
 
+// Below this many seeders a torrent is unlikely to ever actually finish
+// (observed: a "preferred" 2160p release sitting at 0-1 seeders next to a
+// 1080p release of the same movie with a dozen) — once a release has
+// already proven itself dead, a stall retry prefers the lowest-quality
+// option that clears this bar over blindly re-searching, which usually
+// just re-surfaces the same starved release Radarr would pick first. The
+// quality profile's own "upgrade allowed" setting still lets Radarr swap
+// it for something better later if one shows up.
+const MIN_SEEDERS_FOR_RETRY = 3;
+
+// Radarr's own decision engine (used by radarr.search) always prefers the
+// highest quality the profile allows, no matter how few seeders it has —
+// exactly the case that produces a permanent stall. This picks the first
+// release Radarr hasn't rejected for profile/format reasons that also has
+// a realistic shot at completing, in Radarr's own ranked order (so it's
+// still the best quality available among the ones that can actually
+// download). Falls back to a plain search if nothing clears the bar.
+async function grabBestAvailableRelease(radarr, radarrId) {
+  let releases;
+  try {
+    releases = await radarr.getReleases(radarrId);
+  } catch (e) {
+    console.error(`Could not fetch releases for movie ${radarrId}:`, e.message);
+    return false;
+  }
+  const pick = releases.find(r =>
+    (r.rejections ?? []).length === 0 &&
+    (r.protocol !== 'torrent' || (r.seeders ?? 0) >= MIN_SEEDERS_FOR_RETRY)
+  );
+  if (!pick) return false;
+  await radarr.grabRelease(pick.guid, pick.indexerId);
+  return true;
+}
+
 async function addNewMovies(list, movies, radarr, settings) {
   for (const movie of movies) {
     const { rows } = await pool.query(
@@ -313,7 +347,8 @@ async function updateStatuses(radarr, plex, qbittorrent) {
               }
             } catch (_) {}
             try {
-              await radarr.search(movie.radarr_id);
+              const grabbedDirectly = await grabBestAvailableRelease(radarr, movie.radarr_id);
+              if (!grabbedDirectly) await radarr.search(movie.radarr_id);
               console.log(`Stalled movie ${movie.radarr_id} — retrying automatically (attempt ${stallRetryCount}/${MAX_STALL_RETRIES})`);
             } catch (e) {
               console.error(`Retry search failed for movie ${movie.radarr_id}:`, e.message);
